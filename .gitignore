@@ -1,0 +1,7 @@
+# plan workspace (ledger, briefs)
+.superpowers/
+
+# generated at run time
+deploy/data/
+results/
+*.jsonl
