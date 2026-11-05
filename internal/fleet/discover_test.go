@@ -114,9 +114,10 @@ func TestLookupResolvesAnyContainer(t *testing.T) {
 // otherwise aim nsenter at the wrong process.
 func TestLookupRejectsStoppedContainer(t *testing.T) {
 	d := &fakeDocker{containers: map[string]containerInfo{"app-01": {pid: 0, resolvConf: "/rc", ip: ""}}}
-	_, err := Lookup(context.Background(), d, fakeProc(t), "app-01")
-	if err == nil || !strings.Contains(err.Error(), "app-01") {
-		t.Fatalf("err = %v, want one naming app-01", err)
+	// The fake /proc has an entry for PID 0, so only the explicit check can fail.
+	_, err := Lookup(context.Background(), d, fakeProc(t, 0), "app-01")
+	if err == nil || !strings.Contains(err.Error(), "app-01") || !strings.Contains(err.Error(), "not running") {
+		t.Fatalf("err = %v, want one saying app-01 is not running", err)
 	}
 }
 
