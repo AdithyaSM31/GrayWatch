@@ -18,7 +18,8 @@ const (
 )
 
 // Verdict is one host's state. Signals, Category and Score describe the latest
-// tick that flagged a Suspect host, and are empty for a Healthy one.
+// tick that flagged a Suspect host, and are empty for a Healthy one. Z holds this
+// tick's z-score for every signal that could be judged, flagged or not.
 type Verdict struct {
 	Host     string
 	State    HostState
@@ -26,6 +27,7 @@ type Verdict struct {
 	Category string
 	Score    float64
 	Since    time.Time
+	Z        map[collect.Signal]float64
 }
 
 // FleetAlert means the whole fleet moved together, which points at something
@@ -79,11 +81,13 @@ func (d *Detector) Observe(samples []collect.Sample, drained map[string]bool) Ob
 		obs.At = samples[0].At
 	}
 
-	flags := d.flagOutliers(samples, drained)
+	flags, zs := d.score(samples, drained)
 	present := make(map[string]bool, len(samples))
 	for _, s := range samples {
 		present[s.Host] = true
-		obs.Verdicts = append(obs.Verdicts, d.update(s.Host, flags[s.Host], obs.At))
+		v := d.update(s.Host, flags[s.Host], obs.At)
+		v.Z = zs[s.Host]
+		obs.Verdicts = append(obs.Verdicts, v)
 	}
 	// A host that left the fleet has a new container if it returns.
 	maps.DeleteFunc(d.hosts, func(host string, _ *hostHistory) bool { return !present[host] })
@@ -93,8 +97,12 @@ func (d *Detector) Observe(samples []collect.Sample, drained map[string]bool) Ob
 	return obs
 }
 
-func (d *Detector) flagOutliers(samples []collect.Sample, drained map[string]bool) map[string][]flag {
+func (d *Detector) score(samples []collect.Sample, drained map[string]bool) (map[string][]flag, map[string]map[collect.Signal]float64) {
 	flags := map[string][]flag{}
+	zs := make(map[string]map[collect.Signal]float64, len(samples))
+	for _, s := range samples {
+		zs[s.Host] = map[collect.Signal]float64{}
+	}
 	for _, sig := range d.signals {
 		peers := peerValues(samples, drained, sig)
 		if len(peers) < d.cfg.MinHosts {
@@ -107,12 +115,13 @@ func (d *Detector) flagOutliers(samples []collect.Sample, drained map[string]boo
 				continue
 			}
 			z := zScore(x, median, spread)
+			zs[s.Host][sig] = z
 			if z > d.cfg.Z && x-median > d.cfg.MinDelta[sig] {
 				flags[s.Host] = append(flags[s.Host], flag{sig, z})
 			}
 		}
 	}
-	return flags
+	return flags, zs
 }
 
 func peerValues(samples []collect.Sample, drained map[string]bool, sig collect.Signal) []float64 {

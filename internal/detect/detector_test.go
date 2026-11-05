@@ -591,6 +591,26 @@ func TestSignalsListIsSorted(t *testing.T) {
 	}
 }
 
+// The dashboard's heatmap needs every host's z-score, not just flagged ones.
+func TestVerdictCarriesZScores(t *testing.T) {
+	w := newWorld(t, 20)
+	w.drained = map[string]bool{"app-05": true}
+	obs := w.tick(map[string]map[collect.Signal]float64{"app-03": sig(collect.SigIOPSI, 0.5)})
+	want := 0.6745 * (0.5 - 0.01) / 0.01
+	if got := verdict(t, obs, "app-03").Z[collect.SigIOPSI]; math.Abs(got-want) > 1e-6 {
+		t.Errorf("app-03 z = %v, want %v", got, want)
+	}
+	for _, host := range []string{"app-04", "app-05"} {
+		z, ok := verdict(t, obs, host).Z[collect.SigIOPSI]
+		if !ok || z != 0 {
+			t.Errorf("%s z = %v, %v, want 0 and present", host, z, ok)
+		}
+	}
+	if _, ok := verdict(t, obs, "app-04").Z[collect.SigLatP90]; ok {
+		t.Error("z present for a signal with no data")
+	}
+}
+
 func TestEmptyObservation(t *testing.T) {
 	obs := New(DefaultConfig()).Observe(nil, nil)
 	if len(obs.Verdicts) != 0 || obs.Fleet != nil {
