@@ -379,16 +379,25 @@ func TestCategoryPrefersKernelSignal(t *testing.T) {
 }
 
 func TestCategoryPicksHighestKernelZ(t *testing.T) {
-	w := newWorld(t, 20)
-	w.normal = map[collect.Signal]float64{collect.SigIOPSI: 0.01, collect.SigCPUPSI: 0.01}
-	var v Verdict
-	for i := 0; i < 3; i++ {
-		v = verdict(t, w.tick(map[string]map[collect.Signal]float64{
-			"app-03": {collect.SigIOPSI: 0.3, collect.SigCPUPSI: 0.9},
-		}), "app-03")
-	}
-	if v.Category != "cpu" {
-		t.Fatalf("category = %q, want cpu from the higher z", v.Category)
+	// Both orders, so that a detector taking the first or last flagged signal fails.
+	for _, tc := range []struct {
+		cpu, io float64
+		want    string
+	}{
+		{cpu: 0.9, io: 0.3, want: "cpu"},
+		{cpu: 0.3, io: 0.9, want: "disk"},
+	} {
+		w := newWorld(t, 20)
+		w.normal = map[collect.Signal]float64{collect.SigIOPSI: 0.01, collect.SigCPUPSI: 0.01}
+		var v Verdict
+		for i := 0; i < 3; i++ {
+			v = verdict(t, w.tick(map[string]map[collect.Signal]float64{
+				"app-03": {collect.SigIOPSI: tc.io, collect.SigCPUPSI: tc.cpu},
+			}), "app-03")
+		}
+		if v.Category != tc.want {
+			t.Errorf("cpu %v, io %v: category = %q, want %q", tc.cpu, tc.io, v.Category, tc.want)
+		}
 	}
 }
 
@@ -515,14 +524,22 @@ func TestOneBadHostIsNoFleetAlert(t *testing.T) {
 // A handful of hosts with data is not "the fleet". During startup, one slow host
 // must not raise an alert that blocks every drain.
 func TestFleetAlertNeedsMinHosts(t *testing.T) {
-	w := newWorld(t, 20)
-	w.normal = nil
-	slow := map[string]map[collect.Signal]float64{}
-	for _, h := range w.hosts[:4] {
-		slow[h] = sig(collect.SigLatP90, 5000)
-	}
-	if got := w.tick(slow).Fleet; got != nil {
-		t.Fatalf("fleet = %+v, want nil with only 4 hosts reporting", got)
+	for _, tc := range []struct {
+		s collect.Signal
+		v float64
+	}{
+		{collect.SigLatP90, 5000},
+		{collect.SigErrRate, 1},
+	} {
+		w := newWorld(t, 20)
+		w.normal = nil
+		bad := map[string]map[collect.Signal]float64{}
+		for _, h := range w.hosts[:4] {
+			bad[h] = sig(tc.s, tc.v)
+		}
+		if got := w.tick(bad).Fleet; got != nil {
+			t.Errorf("%s: fleet = %+v, want nil with only 4 hosts reporting", tc.s, got)
+		}
 	}
 }
 
