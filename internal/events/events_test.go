@@ -73,6 +73,16 @@ func TestReadAllToleratesTornLastLine(t *testing.T) {
 	}
 }
 
+func TestReadAllKeepsCompleteLastLineWithoutNewline(t *testing.T) {
+	out, err := ReadAll(strings.NewReader(`{"type":"suspect","host":"app-01"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Host != "app-01" {
+		t.Fatalf("got %+v", out)
+	}
+}
+
 func TestReadAllRejectsCorruptMiddleLine(t *testing.T) {
 	if _, err := ReadAll(strings.NewReader("{bad\n" + `{"type":"suspect"}` + "\n")); err == nil {
 		t.Fatal("want error")

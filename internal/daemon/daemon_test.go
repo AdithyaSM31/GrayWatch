@@ -227,6 +227,29 @@ func TestPersistentFaultEndsInFlappingAlert(t *testing.T) {
 	}
 }
 
+// Another host's drain pauses planning for the action gap, which ends the run of
+// repeated alerts. A host already reported as flapping must not be reported again.
+func TestFlappingIsReportedOnceAcrossOtherActions(t *testing.T) {
+	s := newSim(t, remediate.DefaultPolicy())
+	s.run(10, s.healthy)
+	s.run(9*60, s.leakOn("app-07"))
+	if got := s.count(events.Flapping); got != 1 {
+		t.Fatalf("flapping alerts = %d, want 1", got)
+	}
+	s.run(30, func(host string) (int, int) {
+		if host == "app-09" {
+			return 1010, 500
+		}
+		return s.healthy(host)
+	})
+	if !slices.Contains(s.actuator.calls, "drain app-09") {
+		t.Fatalf("calls = %q, want app-09 drained", s.actuator.calls)
+	}
+	if got := s.count(events.Flapping); got != 1 {
+		t.Fatalf("flapping alerts = %d after another host's drain, want still 1", got)
+	}
+}
+
 // The plan's dep-slow check: every host slows together, so alert and drain nothing.
 func TestSharedSlowdownAlertsAndDrainsNothing(t *testing.T) {
 	s := newSim(t, remediate.DefaultPolicy())

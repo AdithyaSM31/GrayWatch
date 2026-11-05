@@ -107,8 +107,8 @@ func (pl *Planner) Plan(obs detect.Observation) []Action {
 
 	var actions []Action
 	for _, host := range slices.Sorted(maps.Keys(pl.drained)) {
-		v, ok := verdicts[host]
-		if !ok || v.State != detect.Healthy || now.Sub(pl.drained[host]) < pl.policy.Cooldown {
+		// A host with no verdict reads as neither state, so it is not restored.
+		if verdicts[host].State != detect.Healthy || now.Sub(pl.drained[host]) < pl.policy.Cooldown {
 			continue
 		}
 		if drains := pl.recentDrains(host, now); drains >= pl.policy.MaxDrainsPerWindow {
@@ -136,7 +136,8 @@ func (pl *Planner) action(kind ActionKind, host, reason string) Action {
 	return Action{Kind: kind, Host: host, Reason: reason, DryRun: pl.policy.DryRun}
 }
 
-// worstSuspect picks the highest score, and the first host by name on a tie.
+// worstSuspect picks the highest score. Verdicts are sorted by host, so a tie goes
+// to the first by name.
 func (pl *Planner) worstSuspect(obs detect.Observation) (detect.Verdict, bool) {
 	var worst detect.Verdict
 	found := false
@@ -147,7 +148,7 @@ func (pl *Planner) worstSuspect(obs detect.Observation) (detect.Verdict, bool) {
 		if _, drained := pl.drained[v.Host]; drained {
 			continue
 		}
-		if !found || v.Score > worst.Score || (v.Score == worst.Score && v.Host < worst.Host) {
+		if !found || v.Score > worst.Score {
 			worst, found = v, true
 		}
 	}
