@@ -3,6 +3,7 @@ package haproxy
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -72,6 +73,28 @@ func TestShowStatParsesServers(t *testing.T) {
 	}
 	if cmd := <-commands; cmd != "show stat\n" {
 		t.Errorf("command = %q", cmd)
+	}
+}
+
+// real_show_stat.csv is a reply captured from HAProxy 2.8 running the generated
+// config, with the whole fleet up.
+func TestShowStatParsesRealReply(t *testing.T) {
+	data, err := os.ReadFile("testdata/real_show_stat.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, _ := fakeRuntime(t, string(data))
+	got, err := newClient(addr).ShowStat(context.Background(), "be_app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 20 {
+		t.Fatalf("got %d servers, want 20", len(got))
+	}
+	for i, s := range got {
+		if want := fmt.Sprintf("app-%02d", i+1); s.Name != want || s.Status != "UP" || s.Down() {
+			t.Errorf("server %d = %+v, want %s and UP", i, s, want)
+		}
 	}
 }
 
