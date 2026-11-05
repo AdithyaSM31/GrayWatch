@@ -16,8 +16,10 @@ func TestExecRunnerSucceeds(t *testing.T) {
 
 // tc and nsenter explain failures on stderr, so the error has to carry it.
 func TestExecRunnerReportsStderr(t *testing.T) {
-	err := ExecRunner{}.Run(context.Background(), "sh", "-c", "echo 'RTNETLINK answers: nope' >&2; exit 2")
-	if err == nil || !strings.Contains(err.Error(), "RTNETLINK answers: nope") {
+	// The text is assembled by the command, so it cannot match the error's copy
+	// of the arguments.
+	err := ExecRunner{}.Run(context.Background(), "sh", "-c", "printf 'RTNETLINK %s' nope >&2; exit 2")
+	if err == nil || !strings.Contains(err.Error(), "RTNETLINK nope") {
 		t.Fatalf("err = %v, want it to include stderr", err)
 	}
 }

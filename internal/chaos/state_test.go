@@ -170,6 +170,46 @@ func TestRevertAllRetrySucceeds(t *testing.T) {
 	}
 }
 
+type runnerFunc func(cmd string) error
+
+func (f runnerFunc) Run(_ context.Context, name string, args ...string) error {
+	return f(name + " " + strings.Join(args, " "))
+}
+
+// A crash between reverting and deleting the state file leaves a record of a
+// qdisc that is already gone, and tc refuses to delete it. Treating that as a
+// failure would mean the retry never succeeds and the next apply is refused.
+// The message is what tc prints on a real kernel when there is nothing to delete.
+func TestRevertAllSucceedsWhenQdiscAlreadyGone(t *testing.T) {
+	e, _ := testEnv(t)
+	if err := ApplyWithState(context.Background(), e, mustFault(t, "net-loss"), testHost(t, "app-01", 1)); err != nil {
+		t.Fatal(err)
+	}
+	e.Run = runnerFunc(func(string) error {
+		return errors.New("exit status 2: Error: Cannot delete qdisc with handle of zero.")
+	})
+	if err := RevertAll(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if files := stateFiles(t, e); len(files) != 0 {
+		t.Fatalf("state files = %q, want none", files)
+	}
+}
+
+func TestNetRevertStillReportsOtherErrors(t *testing.T) {
+	e, _ := testEnv(t)
+	if err := ApplyWithState(context.Background(), e, mustFault(t, "net-loss"), testHost(t, "app-01", 1)); err != nil {
+		t.Fatal(err)
+	}
+	e.Run = runnerFunc(func(string) error { return errors.New("nsenter: cannot open /proc/1/ns/net") })
+	if err := RevertAll(context.Background(), e); err == nil {
+		t.Fatal("want error")
+	}
+	if files := stateFiles(t, e); len(files) != 1 {
+		t.Fatalf("state files = %q, want it kept for a retry", files)
+	}
+}
+
 // When a container is gone its faults went with it, and its old PID may belong
 // to something else by now. Running the revert could hit the wrong process, and
 // keeping the file would make the next apply fail with "already applied".

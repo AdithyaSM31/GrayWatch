@@ -25,6 +25,10 @@ const (
 	// testing: each query needs a connection for about 1 ms, so one spare is
 	// plenty at this request rate.
 	poolLeakConns = 10
+
+	// noQdiscToDelete is what tc prints when the qdisc is already gone. A revert
+	// retried after a crash must count that as done, or it could never finish.
+	noQdiscToDelete = "Cannot delete qdisc with handle of zero"
 )
 
 type applyFunc func(ctx context.Context, e Env, h fleet.Host) (map[string]string, error)
@@ -81,7 +85,11 @@ func netem(name, category string, args ...string) fault {
 			return nil, tc(ctx, e, h, append([]string{"replace", "dev", "eth0", "root", "netem"}, args...)...)
 		},
 		revert: func(ctx context.Context, e Env, h fleet.Host, _ map[string]string) error {
-			return tc(ctx, e, h, "del", "dev", "eth0", "root")
+			err := tc(ctx, e, h, "del", "dev", "eth0", "root")
+			if err != nil && strings.Contains(err.Error(), noQdiscToDelete) {
+				return nil
+			}
+			return err
 		},
 	}
 }
