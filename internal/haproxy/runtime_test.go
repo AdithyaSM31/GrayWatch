@@ -36,6 +36,35 @@ func fakeRuntime(t *testing.T, reply string) (addr string, commands <-chan strin
 	return ln.Addr().String(), got
 }
 
+func TestServerAddrs(t *testing.T) {
+	reply := "1\n# be_id be_name srv_id srv_name srv_addr srv_op_state srv_admin_state\n" +
+		"3 be_app 1 app-01 172.18.0.14 2 0\n3 be_app 2 app-02 172.18.0.18 2 0\n\n"
+	addr, commands := fakeRuntime(t, reply)
+	got, err := newClient(addr).ServerAddrs(context.Background(), "be_app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["app-01"] != "172.18.0.14" || got["app-02"] != "172.18.0.18" {
+		t.Fatalf("got %v", got)
+	}
+	if cmd := <-commands; cmd != "show servers state be_app\n" {
+		t.Fatalf("command = %q", cmd)
+	}
+}
+
+func TestServerAddrsRejectsUnexpectedReply(t *testing.T) {
+	for _, reply := range []string{
+		"Can't find backend.\n",
+		"1\n# be_id be_name srv_id srv_name srv_op_state\n3 be_app 1 app-01 2\n",
+		"1\n# be_id be_name srv_id srv_name srv_addr\n3 be_app 1\n",
+	} {
+		addr, _ := fakeRuntime(t, reply)
+		if got, err := newClient(addr).ServerAddrs(context.Background(), "be_app"); err == nil {
+			t.Errorf("reply %q: got %v, want error", reply, got)
+		}
+	}
+}
+
 func newClient(addr string) *Client {
 	return &Client{Addr: addr, Timeout: time.Second}
 }

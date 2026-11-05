@@ -1,0 +1,7 @@
+name: dep-slow
+fault: dep-slow
+expected_category: fleet
+target: dep
+baseline: 30s
+faultdur: 90s
+cooldown: 30s

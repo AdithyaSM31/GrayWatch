@@ -1,0 +1,6 @@
+# No fault: any suspect in this window is a false positive.
+name: none
+target: none
+baseline: 30s
+faultdur: 600s
+cooldown: 30s

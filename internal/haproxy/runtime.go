@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,34 @@ func (c *Client) ShowStat(ctx context.Context, backend string) ([]ServerStat, er
 		servers = append(servers, ServerStat{Name: name, Status: row[columns["status"]], Scur: scur})
 	}
 	return servers, nil
+}
+
+// ServerAddrs returns the address HAProxy is really sending each server's traffic
+// to. It resolves names only when it starts, so this can differ from what the name
+// resolves to now, and health checks will not show it.
+func (c *Client) ServerAddrs(ctx context.Context, backend string) (map[string]string, error) {
+	reply, err := c.command(ctx, "show servers state "+backend)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(reply), "\n")
+	if len(lines) < 2 || !strings.HasPrefix(lines[1], "# ") {
+		return nil, fmt.Errorf("show servers state: unexpected reply %q", strings.TrimSpace(reply))
+	}
+	columns := strings.Fields(strings.TrimPrefix(lines[1], "# "))
+	nameCol, addrCol := slices.Index(columns, "srv_name"), slices.Index(columns, "srv_addr")
+	if nameCol < 0 || addrCol < 0 {
+		return nil, fmt.Errorf("show servers state: no srv_name or srv_addr column in %q", lines[1])
+	}
+	addrs := map[string]string{}
+	for _, line := range lines[2:] {
+		fields := strings.Fields(line)
+		if len(fields) <= max(nameCol, addrCol) {
+			return nil, fmt.Errorf("show servers state: short row %q", line)
+		}
+		addrs[fields[nameCol]] = fields[addrCol]
+	}
+	return addrs, nil
 }
 
 // SetState changes a server's admin state. HAProxy answers success with a blank

@@ -1,0 +1,7 @@
+name: cpu-contention
+fault: cpu-contention
+expected_category: cpu
+target: random
+baseline: 30s
+faultdur: 90s
+cooldown: 30s

@@ -1,0 +1,7 @@
+name: pool-leak
+fault: pool-leak
+expected_category: app
+target: random
+baseline: 30s
+faultdur: 90s
+cooldown: 30s

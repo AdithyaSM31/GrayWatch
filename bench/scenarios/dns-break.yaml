@@ -1,0 +1,7 @@
+name: dns-break
+fault: dns-break
+expected_category: app
+target: random
+baseline: 30s
+faultdur: 90s
+cooldown: 30s

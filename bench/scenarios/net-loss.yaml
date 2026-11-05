@@ -1,0 +1,7 @@
+name: net-loss
+fault: net-loss
+expected_category: network
+target: random
+baseline: 30s
+faultdur: 90s
+cooldown: 30s
