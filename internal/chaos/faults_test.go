@@ -166,7 +166,7 @@ func TestIOThrottleUsesDevice(t *testing.T) {
 	ioMax := filepath.Join(h.CgroupDir, "io.max")
 
 	saved := apply(t, e, "io-throttle", h)
-	if got, want := readFile(t, ioMax), "259:0 rbps=1048576 wbps=1048576 riops=50 wiops=50"; got != want {
+	if got, want := readFile(t, ioMax), "259:0 rbps=1048576 wbps=1048576 riops=50 wiops=20"; got != want {
 		t.Fatalf("after Apply io.max = %q, want %q", got, want)
 	}
 

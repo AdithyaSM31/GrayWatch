@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// hookTimeout bounds an admin hook call. The memory hook can stall while the
-// kernel throttles its allocation, and a revert must not hang with it.
+// hookTimeout bounds an admin hook call. A service under a fault can be slow to
+// answer, and a revert must not hang with it.
 const hookTimeout = 10 * time.Second
 
 // ExecRunner runs real commands.

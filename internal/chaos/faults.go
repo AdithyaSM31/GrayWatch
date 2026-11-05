@@ -129,7 +129,10 @@ func applyIOThrottle(_ context.Context, e Env, h fleet.Host) (map[string]string,
 	if e.IODevice == "" {
 		return nil, errors.New("io-throttle needs the disk device (MAJ:MIN)")
 	}
-	limit := e.IODevice + " rbps=1048576 wbps=1048576 riops=50 wiops=50"
+	// A host writes 30 times a second at 600 rps across 20 hosts, one synced 4 KiB
+	// write per request. 50 never bites. Measured on ext4: 25 and below stall the
+	// host, and 10 and below also slow its peers enough to raise fleet alerts.
+	limit := e.IODevice + " rbps=1048576 wbps=1048576 riops=50 wiops=20"
 	return map[string]string{"device": e.IODevice}, writeExisting(filepath.Join(h.CgroupDir, "io.max"), limit)
 }
 
@@ -162,8 +165,7 @@ func revertMemPressure(ctx context.Context, e Env, h fleet.Host, saved map[strin
 }
 
 // restoreMemHigh writes memory.high before releasing the memory hog. The hog's
-// allocation can be stuck in kernel throttling, holding the hook's lock, and
-// only raising the limit lets it finish.
+// allocation is stalled in kernel throttling until the limit goes up.
 func restoreMemHigh(ctx context.Context, e Env, h fleet.Host, old string) error {
 	return errors.Join(
 		writeExisting(filepath.Join(h.CgroupDir, "memory.high"), old),

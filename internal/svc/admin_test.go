@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -66,12 +67,33 @@ func TestAdminBodyReportsCurrentState(t *testing.T) {
 		Held        int `json:"held"`
 		BurnThreads int `json:"burn_threads"`
 		MemHogMB    int `json:"memhog_mb"`
+		MemHogGoal  int `json:"memhog_goal_mb"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
 		t.Fatalf("body %q: %v", rec.Body.String(), err)
 	}
-	if state.Held != 4 || state.BurnThreads != 1 || state.MemHogMB != 2 {
-		t.Fatalf("state = %+v, want held 4, burn 1, memhog 2", state)
+	if state.Held != 4 || state.BurnThreads != 1 || state.MemHogGoal != 2 {
+		t.Fatalf("state = %+v, want held 4, burn 1, memhog goal 2", state)
+	}
+}
+
+// The memory fault stalls its own allocation on purpose, so the hook must answer
+// without waiting for it.
+func TestAdminMemHogAnswersWhileAllocationStalls(t *testing.T) {
+	stall := make(chan struct{})
+	burner, hog := &Burner{}, &MemHog{alloc: func() []byte { <-stall; return nil }}
+	t.Cleanup(func() { close(stall); hog.Set(0) })
+	h := NewAdmin(newFakePool(10), burner, hog)
+
+	done := make(chan int, 1)
+	go func() { done <- post(h, "/admin/memhog?mb=300").Code }()
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hook still waiting after 1s while the allocation stalls")
 	}
 }
 
@@ -125,18 +147,98 @@ func TestBurnerResizes(t *testing.T) {
 	waitActive(t, b, 2)
 }
 
+func waitHeld(t *testing.T, m *MemHog, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for m.Held() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("Held() = %d after 5s, want %d", m.Held(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestMemHogHoldsAndReleases(t *testing.T) {
 	m := &MemHog{}
 	m.Set(8)
-	if got := m.Held(); got != 8 {
-		t.Fatalf("Held() = %d, want 8", got)
-	}
+	waitHeld(t, m, 8)
 	m.Set(3)
 	if got := m.Held(); got != 3 {
-		t.Fatalf("Held() = %d, want 3", got)
+		t.Fatalf("Held() = %d right after shrinking, want 3", got)
 	}
 	m.Set(0)
 	if got := m.Held(); got != 0 {
-		t.Fatalf("Held() = %d, want 0", got)
+		t.Fatalf("Held() = %d right after release, want 0", got)
+	}
+}
+
+func TestMemHogRegrowsAfterRelease(t *testing.T) {
+	m := &MemHog{}
+	t.Cleanup(func() { m.Set(0) })
+	m.Set(2)
+	waitHeld(t, m, 2)
+	m.Set(0)
+	m.Set(4)
+	waitHeld(t, m, 4)
+}
+
+// Reverting the fault must work while the kernel is throttling the allocation,
+// and a chunk that finishes after the release must not be kept.
+func TestMemHogReleaseWorksWhileAllocationStalls(t *testing.T) {
+	stall := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	m := &MemHog{alloc: func() []byte {
+		entered <- struct{}{}
+		<-stall
+		return make([]byte, 1)
+	}}
+	m.Set(5)
+	<-entered
+
+	released := make(chan struct{})
+	go func() { m.Set(0); close(released) }()
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("Set(0) still blocked after 1s while the allocation stalls")
+	}
+	if got := m.Goal(); got != 0 {
+		t.Fatalf("Goal() = %d, want 0", got)
+	}
+
+	close(stall)
+	deadline := time.Now().Add(time.Second)
+	for m.growing() {
+		if time.Now().After(deadline) {
+			t.Fatal("grower still running 1s after the stall ended")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := m.Held(); got != 0 {
+		t.Fatalf("Held() = %d, want the late chunk dropped", got)
+	}
+}
+
+func TestMemHogRunsOneGrowerAtATime(t *testing.T) {
+	var running, peak atomic.Int64
+	m := &MemHog{alloc: func() []byte {
+		now := running.Add(1)
+		for {
+			p := peak.Load()
+			if now <= p || peak.CompareAndSwap(p, now) {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+		running.Add(-1)
+		return make([]byte, 1)
+	}}
+	t.Cleanup(func() { m.Set(0) })
+	for i := 1; i <= 5; i++ {
+		m.Set(i * 2)
+	}
+	waitHeld(t, m, 10)
+	if got := peak.Load(); got != 1 {
+		t.Fatalf("%d allocations ran at once, want 1", got)
 	}
 }
