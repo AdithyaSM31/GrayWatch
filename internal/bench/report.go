@@ -182,6 +182,43 @@ func FalsePositiveRate(rs []TrialResult, hosts int, window time.Duration) (rate,
 	return float64(flagged) / hostHours, hostHours, nil
 }
 
+// RenderEBPF compares runs with the run queue signal against the same faults and
+// config without it. Only the config the eBPF run used is compared, as anything else
+// would credit eBPF for the difference between configs.
+func RenderEBPF(base, with []TrialResult, hosts int, noFaultWindow time.Duration) (string, error) {
+	configs := map[Config]bool{}
+	for _, r := range with {
+		configs[Config{r.Health, r.Mode}] = true
+	}
+	matching := filter(base, func(r TrialResult) bool { return configs[Config{r.Health, r.Mode}] })
+	baseRows := map[string]Row{}
+	for _, r := range Summarize(matching) {
+		baseRows[r.Fault] = r
+	}
+	ttd := func(r Row) string {
+		if strings.HasPrefix(r.Graywatch, "0/") {
+			return "n/a"
+		}
+		return fmt.Sprintf("%.1f s", r.MedianTTD.Seconds())
+	}
+
+	var b strings.Builder
+	b.WriteString("| Fault | Graywatch caught | Median TTD | Graywatch caught (eBPF) | Median TTD (eBPF) | p99 detect-only | p99 detect-only (eBPF) |\n")
+	b.WriteString("|---|---|---|---|---|---|---|\n")
+	for _, r := range Summarize(with) {
+		b0, ok := baseRows[r.Fault]
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %d ms | %d ms |\n", r.Fault, b0.Graywatch, ttd(b0), r.Graywatch, ttd(r),
+			b0.P99Detect.Milliseconds(), r.P99Detect.Milliseconds())
+	}
+	if rate, hostHours, err := FalsePositiveRate(with, hosts, noFaultWindow); err == nil {
+		fmt.Fprintf(&b, "\nFalse positives with no fault running and eBPF on: %.2f per host-hour across %.2f host-hours.\n", rate, hostHours)
+	}
+	return b.String(), nil
+}
+
 // Report is the whole of docs/RESULTS.md. Notes are hand-written and come last, as
 // what they say depends on the run.
 func Report(rs []TrialResult, hosts int, noFaultWindow time.Duration, notes string) (string, error) {

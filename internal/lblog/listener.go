@@ -16,6 +16,11 @@ const (
 // Listen receives HAProxy's syslog datagrams into w until ctx ends. It returns
 // nil when ctx ends, and an error if it cannot bind or stops reading.
 func Listen(ctx context.Context, addr string, w *Window) error {
+	return ListenFrom(ctx, addr, w, nil)
+}
+
+// ListenFrom is Listen, keeping only datagrams from allow. Nil allows any source.
+func ListenFrom(ctx context.Context, addr string, w *Window, allow *net.IPNet) error {
 	var lc net.ListenConfig
 	conn, err := lc.ListenPacket(ctx, "udp", addr)
 	if err != nil {
@@ -30,12 +35,17 @@ func Listen(ctx context.Context, addr string, w *Window) error {
 
 	buf := make([]byte, maxDatagram)
 	for {
-		n, _, err := conn.ReadFrom(buf)
+		n, from, err := conn.ReadFrom(buf)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
+		}
+		if allow != nil {
+			if udp, ok := from.(*net.UDPAddr); !ok || !allow.Contains(udp.IP) {
+				continue
+			}
 		}
 		if r, ok := ParseLine(string(buf[:n]), time.Now()); ok {
 			w.Add(r)

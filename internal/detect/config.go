@@ -29,6 +29,7 @@ func DefaultConfig() Config {
 			collect.SigIOPSI:    0.01,
 			collect.SigMemPSI:   0.01,
 			collect.SigRetrans:  0.002,
+			collect.SigRunqP99:  50,
 		},
 		MinDelta: map[collect.Signal]float64{
 			collect.SigLatP90:   50,
@@ -38,6 +39,7 @@ func DefaultConfig() Config {
 			collect.SigIOPSI:    0.10,
 			collect.SigMemPSI:   0.05,
 			collect.SigRetrans:  0.01,
+			collect.SigRunqP99:  3000, // healthy p99 jumps one log2 bucket (2048 us at 2048); 2000 flagged 16 of 20 healthy hosts
 		},
 		Category: map[collect.Signal]string{
 			collect.SigLatP90:   appCategory,
@@ -47,6 +49,7 @@ func DefaultConfig() Config {
 			collect.SigIOPSI:    "disk",
 			collect.SigMemPSI:   "memory",
 			collect.SigRetrans:  "network",
+			collect.SigRunqP99:  "cpu",
 		},
 		FleetLatencyMs: 300,
 		FleetErrRate:   0.05,

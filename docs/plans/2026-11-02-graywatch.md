@@ -597,7 +597,7 @@ func TestRenderMarkdownColumns(t *testing.T) // header row exactly matches the c
 
 **Files:**
 - Create: `internal/ebpf/runqlat.bpf.c`, `internal/ebpf/runqlat.go` (generated via `bpf2go`), `internal/ebpf/source.go`
-- Modify: `internal/collect/collector.go` to add `SigRunqP99="runq_p99_us"`, `internal/detect/config.go` (MinMAD 50, MinDelta 2000, Category cpu)
+- Modify: `internal/collect/collector.go` to add `SigRunqP99="runq_p99_us"`, `internal/detect/config.go` (MinMAD 50, MinDelta 3000, Category cpu; 2000 flagged healthy hosts)
 
 **Interfaces:**
 - Produces: `type RunqSource interface { P99ByCgroup() (map[uint64]float64, error) }`. Collector maps cgroup id → host via the inode of `CgroupDir` (`stat` inode == cgroup id on cgroup v2).

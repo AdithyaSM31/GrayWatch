@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,6 +50,10 @@ type Deps struct {
 	// Servers reads HAProxy's view of the backend each tick, so the planner's
 	// limits count what is really out of rotation. Nil means it isn't read.
 	Servers func(ctx context.Context) ([]haproxy.ServerStat, error)
+
+	// SaveState records the planner's state when its drains change, so a restart can
+	// tell them from servers a person took out. Nil means nothing is saved.
+	SaveState func(remediate.State) error
 }
 
 type Daemon struct {
@@ -75,6 +80,19 @@ func DrainedServers(stats []haproxy.ServerStat) []string {
 		}
 	}
 	return drained
+}
+
+// OwnDrains is which servers to treat as drained by Graywatch after a restart: ones
+// it recorded draining that are still out. Any other server out of rotation belongs
+// to someone else, and the planner will count it but never restore it.
+func OwnDrains(saved remediate.State, stats []haproxy.ServerStat) []string {
+	var own []string
+	for _, name := range DrainedServers(stats) {
+		if slices.Contains(saved.Drained, name) {
+			own = append(own, name)
+		}
+	}
+	return own
 }
 
 // Step runs one tick. Drained hosts stay out of rotation if the daemon stops.
@@ -107,7 +125,20 @@ func (d *Daemon) reconcile(ctx context.Context) {
 		return
 	}
 	d.serversFailing = false
+	before := len(d.Planner.Drained())
 	d.Planner.Reconcile(stats)
+	if len(d.Planner.Drained()) != before {
+		d.saveState(d.Now())
+	}
+}
+
+func (d *Daemon) saveState(now time.Time) {
+	if d.SaveState == nil {
+		return
+	}
+	if err := d.SaveState(d.Planner.State(now)); err != nil {
+		log.Printf("saving state: %v", err)
+	}
 }
 
 // noteTraffic tracks when the fleet started taking traffic. Latency is reported
@@ -210,6 +241,7 @@ func (d *Daemon) act(ctx context.Context, obs detect.Observation) {
 			d.Metrics.CountAction(events.ActionError)
 			continue
 		}
+		d.saveState(obs.At)
 		d.emit(e)
 		d.Metrics.CountAction(string(a.Kind))
 	}

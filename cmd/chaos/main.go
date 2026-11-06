@@ -44,7 +44,7 @@ func run(ctx context.Context, command string, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	env := chaos.Env{Run: chaos.ExecRunner{}, Post: chaos.HTTPPost, IODevice: *ioDevice, StateDir: *stateDir}
+	env := chaos.Env{Run: chaos.ExecRunner{}, Post: chaos.HTTPPost, IODevice: *ioDevice, StateDir: *stateDir, SameContainer: chaos.SameContainer("/proc")}
 
 	switch command {
 	case "apply":

@@ -31,7 +31,7 @@ Every second, `graywatchd` reads seven signals per host: p90 latency and error r
 
 It scores each signal with a robust z-score against the other hosts, and a host becomes suspect when it is flagged in 3 of the last 5 ticks. Because hosts are compared with each other, a problem shared by every host doesn't single anyone out. So the fleet's median latency and error rate have their own limits, and breaching one raises a fleet alert and blocks drains and restores.
 
-Drains go through HAProxy's runtime API with limits on how much damage they can do. At most 10% of the fleet can be out of rotation at once, whoever took it out, including hosts failing their health checks. Nothing drains while more than 30% of hosts are suspect or down, or in the first 20 s after traffic starts. Actions are at least 10 s apart, a host waits out a 60 s cooldown before coming back, and a host drained 3 times in 10 minutes stays out and raises an alert.
+Drains go through HAProxy's runtime API with limits on how much damage they can do. At most 10% of the fleet can be out of rotation at once, whoever took it out, including hosts failing their health checks. Nothing drains while more than 30% of hosts are suspect or down, or in the first 20 s after traffic starts. Actions are at least 10 s apart, a host waits out a 60 s cooldown before coming back, and a host drained 3 times in 10 minutes stays out and raises an alert. Graywatch only ever restores servers it drained itself, which it remembers across restarts in `-state-file`. A server you put in maintenance is left alone, and counts toward the 10%.
 
 ## Results
 
@@ -121,7 +121,7 @@ The dashboard is off by default, because the benchmark's numbers come from a fle
 docker compose -f deploy/docker-compose.yml --profile dashboard up -d
 ```
 
-Keep ports 5140 (UDP) and 9100 firewalled from anything outside the VM. `graywatchd` runs as root and trusts the request log it receives on 5140, so anyone who can reach that port can forge log lines and get healthy hosts drained, up to the 10% limit, or raise a fleet alert that blocks drains. Port 9100 serves its metrics with no authentication.
+Keep ports 5140 (UDP) and 9100 firewalled from anything outside the VM. `graywatchd` runs as root and trusts the request log it receives on 5140, so anyone who can reach that port can forge log lines and get healthy hosts drained, up to the 10% limit, or raise a fleet alert that blocks drains. `-log-from` limits which addresses it accepts the log from, such as the Compose network's subnet, though UDP source addresses can be spoofed. Port 9100 serves its metrics with no authentication.
 
 ## Limitations
 
@@ -129,7 +129,6 @@ Keep ports 5140 (UDP) and 9100 firewalled from anything outside the VM. `graywat
 - Network delay is diagnosed as `app`. Delay alone causes no retransmits, and without round-trip data a slow network looks like a slow application. Graywatch still detects and drains the host, but the label is wrong in all nine trials.
 - HAProxy's logs are the only client view. Graywatch can't see what clients on other paths experience.
 - A host's first requests are slow, up to about 1 s for the first 2 s of traffic, so healthy hosts can go suspect when traffic starts. That really drained a healthy host once, so drains now wait 20 s after traffic starts (`-startup-grace`), and a held drain is logged as `drain_held`. The cost is that a daemon restarted during a real failure can't drain anything for 20 s. Those suspect events can still appear, and the benchmark warms up first, so its false positive numbers don't cover them.
-- Graywatch can't tell its own drains from yours after a restart. Any server in maintenance when the daemon starts is treated as drained by Graywatch, and comes back 60 s later if it reads healthy. Don't run the daemon on a fleet with servers you've taken out by hand. A server you take out while it's running is left alone, and counts toward the 10% limit.
 - Three trials per config is few. These are direct comparisons on one machine, not precise estimates.
 - `mem-pressure` at this strength nearly stalls the host, so it isn't really gray, and even the shallow check catches it in about 13 s. Its results also come from a separate run on a fresh fleet, after fixing a bug that made the fault do nothing on long-running hosts.
 

@@ -98,6 +98,7 @@ func TestDefaultConfig(t *testing.T) {
 		{collect.SigIOPSI, 0.01, 0.10, "disk"},
 		{collect.SigMemPSI, 0.01, 0.05, "memory"},
 		{collect.SigRetrans, 0.002, 0.01, "network"},
+		{collect.SigRunqP99, 50, 3000, "cpu"},
 	} {
 		if c.MinMAD[tc.s] != tc.minMAD || c.MinDelta[tc.s] != tc.minDelta || c.Category[tc.s] != tc.category {
 			t.Errorf("%s: MinMAD/MinDelta/Category = %v/%v/%q", tc.s, c.MinMAD[tc.s], c.MinDelta[tc.s], c.Category[tc.s])

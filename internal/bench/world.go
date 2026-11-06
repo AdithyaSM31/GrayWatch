@@ -73,6 +73,7 @@ func CheckServerMapping(addrs map[string]string, hosts []fleet.Host) error {
 type RealWorld struct {
 	DeployDir  string
 	DaemonPath string
+	EBPF       bool
 	FleetSize  int
 	Backend    string
 	HAProxy    *haproxy.Client
@@ -215,9 +216,18 @@ func (w *RealWorld) StartDaemon(_ context.Context, eventsPath string, dryRun boo
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"-haproxy", w.HAProxy.Addr, "-backend", w.Backend, "-events", eventsPath}
+	// Each trial starts with no memory of the last, which is why the daemon restarts.
+	statePath := strings.TrimSuffix(eventsPath, filepath.Ext(eventsPath)) + ".state.json"
+	if err := os.Remove(statePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logFile.Close()
+		return nil, err
+	}
+	args := []string{"-haproxy", w.HAProxy.Addr, "-backend", w.Backend, "-events", eventsPath, "-state-file", statePath}
 	if dryRun {
 		args = append(args, "-dry-run")
+	}
+	if w.EBPF {
+		args = append(args, "-ebpf")
 	}
 	// Not CommandContext: an interrupt has to find the daemon still running, so
 	// that it is stopped after the faults end rather than before.

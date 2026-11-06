@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/AdithyaSM31/graywatch/internal/cgroup"
 	"github.com/AdithyaSM31/graywatch/internal/fleet"
 )
 
@@ -23,7 +24,20 @@ func statePath(e Env, host, faultName string) string {
 	return filepath.Join(e.StateDir, host+"__"+faultName+".json")
 }
 
-// ApplyWithState applies f and records it. If the record cannot be written the
+// SameContainer returns a check that a recorded host is still the same running
+// container. docker restart keeps the cgroup path but starts a new process, so the
+// recorded PID is dead or belongs to something else, and the check looks at where
+// that PID lives now.
+func SameContainer(procRoot string) func(fleet.Host) bool {
+	return func(h fleet.Host) bool {
+		dir, err := cgroup.DirForPID(procRoot, h.PID)
+		return err == nil && dir == h.CgroupDir
+	}
+}
+
+// ApplyWithState records f, applies it, then records what it saved. The first
+// record is what makes a crash partway through recoverable: every revert tolerates
+// a fault that was never fully applied. If the last record cannot be written the
 // fault is reverted, because nothing could undo it later.
 func ApplyWithState(ctx context.Context, e Env, f Fault, h fleet.Host) error {
 	if err := os.MkdirAll(e.StateDir, 0o755); err != nil {
@@ -36,12 +50,31 @@ func ApplyWithState(ctx context.Context, e Env, f Fault, h fleet.Host) error {
 		return err
 	}
 
-	saved, err := f.Apply(ctx, e, h)
-	if err != nil {
+	var snapshot map[string]string
+	if s, ok := f.(Snapshotter); ok {
+		var err error
+		if snapshot, err = s.Snapshot(e, h); err != nil {
+			return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, err)
+		}
+	}
+	if err := writeState(path, state{Fault: f.Name(), Host: h, Saved: snapshot}); err != nil {
 		return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, err)
 	}
+
+	saved, err := f.Apply(ctx, e, h)
+	if err != nil {
+		// Apply undoes its own partial work, so there is nothing left to record.
+		return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, errors.Join(err, removeIfPresent(path)))
+	}
 	if err := writeState(path, state{Fault: f.Name(), Host: h, Saved: saved}); err != nil {
-		return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, errors.Join(err, f.Revert(ctx, e, h, saved)))
+		return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, errors.Join(err, f.Revert(ctx, e, h, saved), removeIfPresent(path)))
+	}
+	return nil
+}
+
+func removeIfPresent(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }
@@ -95,6 +128,11 @@ func revertFile(ctx context.Context, e Env, path string) error {
 	// The container's cgroup goes away with it. Its faults went too, and its old
 	// PID may belong to another process by now, so running the revert is unsafe.
 	if _, err := os.Stat(s.Host.CgroupDir); errors.Is(err, fs.ErrNotExist) {
+		return os.Remove(path)
+	}
+	// The same goes for a container that restarted: same cgroup path, fresh limits,
+	// and a new process, so a revert would at best fail forever.
+	if e.SameContainer != nil && !e.SameContainer(s.Host) {
 		return os.Remove(path)
 	}
 

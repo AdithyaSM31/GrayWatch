@@ -27,7 +27,15 @@ const (
 	SigMemPSI   Signal = "mem_psi"
 	SigThrottle Signal = "cpu_throttle"
 	SigRetrans  Signal = "tcp_retrans"
+	SigRunqP99  Signal = "runq_p99_us"
 )
+
+// RunqSource reports each cgroup's 99th percentile run queue latency since the
+// last call, in microseconds, keyed by cgroup id. A cgroup with too few scheduling
+// events to judge is left out.
+type RunqSource interface {
+	P99ByCgroup() (map[uint64]float64, error)
+}
 
 // Sample is one host's signals for one tick. A missing key means no data, which
 // is different from 0: a drained host has no latency, not a latency of zero.
@@ -50,10 +58,20 @@ type Collector struct {
 	now    func() time.Time
 	hosts  []fleet.Host
 	prev   map[string]snapshot
+
+	runq     RunqSource
+	cgroupID func(dir string) (uint64, error)
+	ids      map[string]uint64
 }
 
 func New(k KernelSource, c ClientSource, now func() time.Time) *Collector {
 	return &Collector{kernel: k, client: c, now: now, prev: map[string]snapshot{}}
+}
+
+// SetRunq adds the run queue latency signal. cgroupID maps a host's cgroup directory
+// to the id the source reports. Call it before SetHosts.
+func (c *Collector) SetRunq(src RunqSource, cgroupID func(dir string) (uint64, error)) {
+	c.runq, c.cgroupID = src, cgroupID
 }
 
 // SetHosts replaces the hosts to collect from. A host whose PID changed has
@@ -66,6 +84,17 @@ func (c *Collector) SetHosts(hs []fleet.Host) {
 		}
 	}
 	c.hosts, c.prev = hs, prev
+
+	if c.cgroupID == nil {
+		return
+	}
+	// A restarted container has a new cgroup, even at the same path.
+	c.ids = make(map[string]uint64, len(hs))
+	for _, h := range hs {
+		if id, err := c.cgroupID(h.CgroupDir); err == nil {
+			c.ids[h.Name] = id
+		}
+	}
 }
 
 // Tick reads every host once. A host's kernel signals are left out on its first
@@ -73,6 +102,11 @@ func (c *Collector) SetHosts(hs []fleet.Host) {
 // come from a separate source and are not affected.
 func (c *Collector) Tick() []Sample {
 	now := c.now()
+	var runq map[uint64]float64
+	if c.runq != nil {
+		// On a failed read this signal just has no data this tick.
+		runq, _ = c.runq.P99ByCgroup()
+	}
 	samples := make([]Sample, 0, len(c.hosts))
 	for _, h := range c.hosts {
 		values := map[Signal]float64{}
@@ -85,6 +119,11 @@ func (c *Collector) Tick() []Sample {
 		if p90, errRate, n := c.client.Stats(h.Name, now, clientSpan); n >= minClientRequests {
 			values[SigLatP90] = p90
 			values[SigErrRate] = errRate
+		}
+		if id, ok := c.ids[h.Name]; ok {
+			if p99, ok := runq[id]; ok {
+				values[SigRunqP99] = p99
+			}
 		}
 		samples = append(samples, Sample{Host: h.Name, At: now, Values: values})
 	}

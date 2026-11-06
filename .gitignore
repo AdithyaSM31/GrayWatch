@@ -12,3 +12,6 @@ deploy/haproxy.cfg
 
 # built by the README's commands
 bin/
+
+# generated from the kernel by bpftool; compiled BPF objects are committed instead
+internal/ebpf/vmlinux.h

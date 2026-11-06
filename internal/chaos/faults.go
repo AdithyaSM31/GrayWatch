@@ -41,10 +41,18 @@ type fault struct {
 	name, category string
 	apply          applyFunc
 	revert         revertFunc
+	snapshot       func(e Env, h fleet.Host) (map[string]string, error) // nil if revert needs nothing
 }
 
 func (f fault) Name() string     { return f.name }
 func (f fault) Category() string { return f.category }
+
+func (f fault) Snapshot(e Env, h fleet.Host) (map[string]string, error) {
+	if f.snapshot == nil {
+		return nil, nil
+	}
+	return f.snapshot(e, h)
+}
 
 func (f fault) Apply(ctx context.Context, e Env, h fleet.Host) (map[string]string, error) {
 	return f.apply(ctx, e, h)
@@ -63,9 +71,9 @@ func Registry() map[string]Fault {
 		saveAndWrite("cpu-throttle", "cpu", "cpu.max", "5000 100000"),
 		hook("cpu-contention", "cpu", "burn?threads=2", "burn?threads=0"),
 		hook("pool-leak", "app", fmt.Sprintf("leak?n=%d", poolLeakConns), "leak?n=0"),
-		{"io-throttle", "disk", applyIOThrottle, revertIOThrottle},
-		{"mem-pressure", "memory", applyMemPressure, revertMemPressure},
-		{"dns-break", "app", applyDNSBreak, revertDNSBreak},
+		{"io-throttle", "disk", applyIOThrottle, revertIOThrottle, snapshotIOThrottle},
+		{"mem-pressure", "memory", applyMemPressure, revertMemPressure, snapshotMemPressure},
+		{"dns-break", "app", applyDNSBreak, revertDNSBreak, snapshotDNSBreak},
 	}
 	registry := make(map[string]Fault, len(faults))
 	for _, f := range faults {
@@ -98,16 +106,23 @@ func netem(name, category string, args ...string) fault {
 }
 
 func saveAndWrite(name, category, file, value string) fault {
+	snapshot := func(_ Env, h fleet.Host) (map[string]string, error) {
+		old, err := readTrimmed(filepath.Join(h.CgroupDir, file))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{file: old}, nil
+	}
 	return fault{
 		name:     name,
 		category: category,
-		apply: func(_ context.Context, _ Env, h fleet.Host) (map[string]string, error) {
-			path := filepath.Join(h.CgroupDir, file)
-			old, err := readTrimmed(path)
+		snapshot: snapshot,
+		apply: func(_ context.Context, e Env, h fleet.Host) (map[string]string, error) {
+			saved, err := snapshot(e, h)
 			if err != nil {
 				return nil, err
 			}
-			return map[string]string{file: old}, writeExisting(path, value)
+			return saved, writeExisting(filepath.Join(h.CgroupDir, file), value)
 		},
 		revert: func(_ context.Context, _ Env, h fleet.Host, saved map[string]string) error {
 			return writeExisting(filepath.Join(h.CgroupDir, file), saved[file])
@@ -120,12 +135,38 @@ func hook(name, category, applyPath, revertPath string) fault {
 		name:     name,
 		category: category,
 		apply: func(ctx context.Context, e Env, h fleet.Host) (map[string]string, error) {
-			return nil, e.Post(ctx, adminURL(h, applyPath))
+			err := e.Post(ctx, adminURL(h, applyPath))
+			if err != nil {
+				// It may have run anyway, such as a request that timed out, or partly
+				// run, such as a pool that gave up some of its connections.
+				return nil, errors.Join(err, e.Post(context.WithoutCancel(ctx), adminURL(h, revertPath)))
+			}
+			return nil, nil
 		},
 		revert: func(ctx context.Context, e Env, h fleet.Host, _ map[string]string) error {
 			return e.Post(ctx, adminURL(h, revertPath))
 		},
 	}
+}
+
+func snapshotIOThrottle(e Env, _ fleet.Host) (map[string]string, error) {
+	return map[string]string{"device": e.IODevice}, nil
+}
+
+func snapshotMemPressure(_ Env, h fleet.Host) (map[string]string, error) {
+	old, err := readTrimmed(filepath.Join(h.CgroupDir, "memory.high"))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"memory.high": old}, nil
+}
+
+func snapshotDNSBreak(_ Env, h fleet.Host) (map[string]string, error) {
+	old, err := os.ReadFile(h.ResolvConf)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"resolv.conf": string(old)}, nil
 }
 
 func applyIOThrottle(_ context.Context, e Env, h fleet.Host) (map[string]string, error) {

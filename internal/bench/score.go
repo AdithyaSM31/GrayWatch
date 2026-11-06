@@ -58,6 +58,7 @@ func Score(sc Scenario, target string, tBase, t0, t1 time.Time, evs []events.Eve
 
 	var first *events.Event
 	falsePos := map[string]bool{}
+	dryRunDrained := map[string]bool{}
 	for i := range evs {
 		e := &evs[i]
 		switch e.Type {
@@ -76,9 +77,18 @@ func Score(sc Scenario, target string, tBase, t0, t1 time.Time, evs []events.Eve
 				first = e
 			}
 		case events.Drain:
-			if within(e.TS, t0, end) && (dep || e.Host == target) {
-				r.Drains++
+			if !within(e.TS, t0, end) || (!dep && sc.Target != TargetNone && e.Host != target) {
+				continue
 			}
+			// A dry run changes nothing, so the same would-be drain can be logged again
+			// after a fleet alert. It is still one drain.
+			if e.DryRun {
+				if dryRunDrained[e.Host] {
+					continue
+				}
+				dryRunDrained[e.Host] = true
+			}
+			r.Drains++
 		}
 	}
 	r.FalsePosHosts = len(falsePos)

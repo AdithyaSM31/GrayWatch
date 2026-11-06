@@ -56,6 +56,7 @@ func report(args []string) error {
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
 	scenarioDir := fs.String("scenarios", "bench/scenarios", "directory of scenario files")
 	out := fs.String("out", filepath.Join("docs", "RESULTS.md"), "file to write")
+	ebpfDir := fs.String("ebpf", "", "results directory of a run with -ebpf, to compare")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -90,6 +91,22 @@ func report(args []string) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if *ebpfDir != "" {
+		ef, err := os.Open(filepath.Join(*ebpfDir, "trials.csv"))
+		if err != nil {
+			return err
+		}
+		defer ef.Close()
+		withEBPF, err := bench.ReadTrialsCSV(ef)
+		if err != nil {
+			return err
+		}
+		section, err := bench.RenderEBPF(results, withEBPF, fleetSize, window)
+		if err != nil {
+			return err
+		}
+		notes = append([]byte("## With the run queue signal\n\nThe same faults with `-ebpf` on, in the same config:\n\n"+section+"\n"), notes...)
+	}
 	text, err := bench.Report(results, fleetSize, window, string(notes))
 	if err != nil {
 		return err
@@ -115,6 +132,7 @@ func run(ctx context.Context, args []string) error {
 	ioDevice := fs.String("io-device", "", "MAJ:MIN of the disk for io-throttle (default: the disk holding the fleet's data)")
 	stateDir := fs.String("state-dir", "/var/lib/graywatch/chaos", "where applied faults are recorded")
 	force := fs.Bool("force", false, "replace results already in the output directory")
+	useEBPF := fs.Bool("ebpf", false, "run graywatchd with the eBPF run queue signal")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -148,10 +166,11 @@ func run(ctx context.Context, args []string) error {
 	world := &bench.RealWorld{
 		DeployDir:  *deployDir,
 		DaemonPath: *daemonPath,
+		EBPF:       *useEBPF,
 		FleetSize:  fleetSize,
 		Backend:    "be_app",
 		HAProxy:    &haproxy.Client{Addr: *addr, Timeout: 2 * time.Second},
-		Chaos:      chaos.Env{Run: chaos.ExecRunner{}, Post: chaos.HTTPPost, IODevice: *ioDevice, StateDir: *stateDir},
+		Chaos:      chaos.Env{Run: chaos.ExecRunner{}, Post: chaos.HTTPPost, IODevice: *ioDevice, StateDir: *stateDir, SameContainer: chaos.SameContainer("/proc")},
 		LoadConfig: loadgen.Config{URL: *url, RPS: *rps, Timeout: 2 * time.Second},
 	}
 	o := &bench.Orchestrator{
