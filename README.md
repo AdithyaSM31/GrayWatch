@@ -49,11 +49,15 @@ Each fault ran three times in each of three configs on one VM with 20 hosts at 6
 | net-loss | 0/3 | 0/3 | 9/9 | 3.0 s | 8/9 | 0 | 39 ms | 24 ms |
 | pool-leak | 0/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 1003 ms | 26 ms |
 
-With no fault running, no host was flagged in 11 host-hours. For `dep-slow`, a shared dependency problem, "caught" means a fleet alert, and Graywatch drained nothing in any of the nine trials.
+With no fault running on a warmed-up fleet, no host was flagged in 11 host-hours. For `dep-slow`, a shared dependency problem, "caught" means a fleet alert, and Graywatch drained nothing in any of the nine trials.
 
 Deep health checks do better than this table might suggest. On `pool-leak` and `dns-break` they end up with fewer errors than Graywatch's drains, about 0.48% against 0.73%, even though they react 6 to 7 s later. A drained host gets no traffic, so it reads as healthy and comes back after the cooldown with the fault still on, then fails requests for about 10 s until it is drained again. Graywatch's clearer advantage is on faults that deep checks can't see, such as `io-throttle`, `net-loss` and `cpu-contention`.
 
 [docs/RESULTS.md](docs/RESULTS.md) has the error rates and how to read the numbers, and [docs/data/trials.csv](docs/data/trials.csv) has every trial.
+
+This is one `pool-leak` on `app-07` with real drains. The fault starts at 07:18:01. The second red block is the host coming back after its cooldown with the fault still on, and being drained again.
+
+![Grafana dashboard: app-07's z-score and suspect rows turn red twice during the fault while the other 19 hosts stay green](docs/img/dashboard-pool-leak.png)
 
 ## Running it
 
@@ -77,18 +81,18 @@ docker compose -f deploy/docker-compose.yml up -d --build --force-recreate
 
 Keep `--force-recreate` when you restart the fleet. HAProxy resolves server names only when it starts, so recreating the apps without it sends each server's traffic to the wrong container, and every server still reads `UP`.
 
-Build the tools, then run the daemon and some load. Leave out `-dry-run` to let it really drain hosts:
+Build the tools and start some load. Give it about a minute before starting the daemon, because a freshly started fleet can look sick for its first few seconds (see Limitations). Leave out `-dry-run` to let the daemon really drain hosts:
 
 ```bash
 go build -o bin/ ./cmd/...
 ```
 
 ```bash
-sudo bin/graywatchd -dry-run -events events.jsonl
+bin/loadgen -rps 600 -duration 5m
 ```
 
 ```bash
-bin/loadgen -rps 600 -duration 5m
+sudo bin/graywatchd -dry-run -events events.jsonl
 ```
 
 Break a host and watch `events.jsonl`:
@@ -122,6 +126,7 @@ docker compose -f deploy/docker-compose.yml --profile dashboard up -d
 - The containers share one kernel and one disk, so this simulates a fleet. A fault on one host can reach its neighbours through shared resources in ways separate machines wouldn't. Writes limited hard enough slowed other hosts, and reverting `io-throttle` on an undrained host slowed the whole fleet for several seconds.
 - Network delay is diagnosed as `app`. Delay alone causes no retransmits, and without round-trip data a slow network looks like a slow application. Graywatch still detects and drains the host, but the label is wrong in all nine trials.
 - HAProxy's logs are the only client view. Graywatch can't see what clients on other paths experience.
+- A cold fleet can trigger false alarms. When I started load and the daemon together on a fleet that had just come up, four healthy hosts went suspect in the first 8 s and one was really drained, then restored 60 s later. The benchmark warms up with 60 s of traffic first, so its false positive numbers don't cover this.
 - Three trials per config is few. These are direct comparisons on one machine, not precise estimates.
 - `mem-pressure` at this strength nearly stalls the host, so it isn't really gray, and even the shallow check catches it in about 13 s. Its results also come from a separate run on a fresh fleet, after fixing a bug that made the fault do nothing on long-running hosts.
 
