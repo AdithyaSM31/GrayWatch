@@ -1,0 +1,7 @@
+name: net-delay
+fault: net-delay
+expected_category: network
+target: random
+baseline: 30s
+faultdur: 90s
+cooldown: 30s

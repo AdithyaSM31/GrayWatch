@@ -1,0 +1,8 @@
+scenario,mode,health,target,trial,hc_detected,hc_ttd_ms,gw_detected,gw_ttd_ms,gw_category,category_ok,false_pos_hosts,drains,fleet_alert,p50_ms,p99_ms,err_rate,baseline_p99_ms
+cpu-contention,detect,shallow,app-18,1,false,0,true,3104,cpu,true,0,1,false,11,226,0,22
+cpu-contention,detect,shallow,app-20,2,false,0,true,3120,cpu,true,0,1,false,11,227,0,21
+cpu-contention,detect,shallow,app-03,3,false,0,true,3106,cpu,true,0,1,false,10,237,0,23
+cpu-throttle,detect,shallow,app-02,1,false,0,true,3100,cpu,true,0,1,false,9,2000,0.028283725751517844,19
+cpu-throttle,detect,shallow,app-04,2,false,0,true,3092,cpu,true,0,1,false,9,2000,0.023417686369610693,18
+cpu-throttle,detect,shallow,app-20,3,false,0,true,3101,cpu,true,0,1,false,9,2000,0.026970992762074007,22
+none,detect,shallow,,1,false,0,false,0,,false,0,0,false,9,21,0,19

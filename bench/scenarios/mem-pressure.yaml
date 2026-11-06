@@ -1,0 +1,7 @@
+name: mem-pressure
+fault: mem-pressure
+expected_category: memory
+target: random
+baseline: 30s
+faultdur: 90s
+cooldown: 30s

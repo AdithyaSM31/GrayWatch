@@ -1,0 +1,7 @@
+name: io-throttle
+fault: io-throttle
+expected_category: disk
+target: random
+baseline: 30s
+faultdur: 90s
+cooldown: 30s
