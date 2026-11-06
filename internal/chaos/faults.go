@@ -62,6 +62,17 @@ func (f fault) Revert(ctx context.Context, e Env, h fleet.Host, saved map[string
 	return f.revert(ctx, e, h, saved)
 }
 
+// errNotUndone marks an Apply that failed and couldn't undo its own partial work, so
+// the fault may still be on and its record has to stay.
+var errNotUndone = errors.New("could not undo it")
+
+func rollback(applyErr, undoErr error) error {
+	if undoErr == nil {
+		return applyErr
+	}
+	return errors.Join(applyErr, fmt.Errorf("%w: %w", errNotUndone, undoErr))
+}
+
 // Registry returns every fault by name.
 func Registry() map[string]Fault {
 	faults := []fault{
@@ -139,7 +150,7 @@ func hook(name, category, applyPath, revertPath string) fault {
 			if err != nil {
 				// It may have run anyway, such as a request that timed out, or partly
 				// run, such as a pool that gave up some of its connections.
-				return nil, errors.Join(err, e.Post(context.WithoutCancel(ctx), adminURL(h, revertPath)))
+				return nil, rollback(err, e.Post(context.WithoutCancel(ctx), adminURL(h, revertPath)))
 			}
 			return nil, nil
 		},
@@ -200,7 +211,7 @@ func applyMemPressure(ctx context.Context, e Env, h fleet.Host) (map[string]stri
 	}
 	if err := e.Post(ctx, adminURL(h, fmt.Sprintf("memhog?mb=%d", memHogMB))); err != nil {
 		// An interrupt during the hook must not leave the limit on and the hog running.
-		return nil, errors.Join(err, restoreMemHigh(context.WithoutCancel(ctx), e, h, old))
+		return nil, rollback(err, restoreMemHigh(context.WithoutCancel(ctx), e, h, old))
 	}
 	return map[string]string{"memory.high": old}, nil
 }
@@ -223,7 +234,11 @@ func applyDNSBreak(_ context.Context, _ Env, h fleet.Host) (map[string]string, e
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"resolv.conf": string(old)}, writeExisting(h.ResolvConf, "nameserver 192.0.2.1\n")
+	if err := writeExisting(h.ResolvConf, "nameserver 192.0.2.1\n"); err != nil {
+		// Opening the file truncated it, so a failed write can leave it empty.
+		return nil, rollback(err, writeExisting(h.ResolvConf, string(old)))
+	}
+	return map[string]string{"resolv.conf": string(old)}, nil
 }
 
 func revertDNSBreak(_ context.Context, _ Env, h fleet.Host, saved map[string]string) error {

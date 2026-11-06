@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/AdithyaSM31/graywatch/internal/cgroup"
 	"github.com/AdithyaSM31/graywatch/internal/fleet"
@@ -27,11 +28,15 @@ func statePath(e Env, host, faultName string) string {
 // SameContainer returns a check that a recorded host is still the same running
 // container. docker restart keeps the cgroup path but starts a new process, so the
 // recorded PID is dead or belongs to something else, and the check looks at where
-// that PID lives now.
+// that PID lives now. Only a process that is gone proves a restart. Any other read
+// error says nothing, and dropping the record on it would lose track of a live fault.
 func SameContainer(procRoot string) func(fleet.Host) bool {
 	return func(h fleet.Host) bool {
 		dir, err := cgroup.DirForPID(procRoot, h.PID)
-		return err == nil && dir == h.CgroupDir
+		if err != nil {
+			return !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ESRCH)
+		}
+		return dir == h.CgroupDir
 	}
 }
 
@@ -45,7 +50,7 @@ func ApplyWithState(ctx context.Context, e Env, f Fault, h fleet.Host) error {
 	}
 	path := statePath(e, h.Name, f.Name())
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("%s on %s: already applied", f.Name(), h.Name)
+		return fmt.Errorf("%s on %s: already applied, or left over from a crash; revert it first", f.Name(), h.Name)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -63,11 +68,18 @@ func ApplyWithState(ctx context.Context, e Env, f Fault, h fleet.Host) error {
 
 	saved, err := f.Apply(ctx, e, h)
 	if err != nil {
-		// Apply undoes its own partial work, so there is nothing left to record.
+		if errors.Is(err, errNotUndone) {
+			return fmt.Errorf("%s on %s: %w (keeping its record, so a revert can try again)", f.Name(), h.Name, err)
+		}
+		// Apply undid its own partial work, so there is nothing left to record.
 		return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, errors.Join(err, removeIfPresent(path)))
 	}
 	if err := writeState(path, state{Fault: f.Name(), Host: h, Saved: saved}); err != nil {
-		return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, errors.Join(err, f.Revert(ctx, e, h, saved), removeIfPresent(path)))
+		if revertErr := f.Revert(ctx, e, h, saved); revertErr != nil {
+			// The first record is still there, and is what can undo this later.
+			return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, errors.Join(err, revertErr))
+		}
+		return fmt.Errorf("%s on %s: %w", f.Name(), h.Name, errors.Join(err, removeIfPresent(path)))
 	}
 	return nil
 }
