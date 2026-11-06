@@ -4,7 +4,7 @@ Graywatch finds containers that pass their health checks while failing real traf
 
 ## The problem
 
-> **TODO: one sentence, in your own words, about the connection-pool incident from your internship.**
+During my internship, I fixed API 500 errors caused by code that created a new `PrismaClient()` on every call, which used up the database connection pool.
 
 A health endpoint that returns 200 says the process is up and little else. This kind of partial failure is called a gray failure: the host looks fine to the load balancer while its requests fail or crawl. A deeper health check helps only with what it was written to test.
 
