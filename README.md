@@ -27,7 +27,7 @@ flowchart TD
     bench["bench"] -- "injects faults, scores events" --> chaos
 ```
 
-Every second, `graywatchd` reads seven signals per host: p90 latency and error rate from HAProxy's request log, CPU, IO and memory pressure from cgroup PSI, CPU throttling, and TCP retransmits from the container's network namespace.
+Every second, `graywatchd` reads seven signals per host: p90 latency and error rate from HAProxy's request log, CPU, IO and memory pressure from cgroup PSI, CPU throttling, and TCP retransmits from the container's network namespace. With `-ebpf` it adds an eighth, run queue latency per cgroup, from a BPF program on the scheduler.
 
 It scores each signal with a robust z-score against the other hosts, and a host becomes suspect when it is flagged in 3 of the last 5 ticks. Because hosts are compared with each other, a problem shared by every host doesn't single anyone out. So the fleet's median latency and error rate have their own limits, and breaching one raises a fleet alert and blocks drains and restores.
 
@@ -39,19 +39,21 @@ Each fault ran three times in each of three configs on one VM with 20 hosts at 6
 
 | Fault | HC caught (shallow) | HC caught (deep) | Graywatch caught | Median TTD | Category right | False-positive hosts | p99 detect-only | p99 remediate |
 |---|---|---|---|---|---|---|---|---|
-| cpu-contention | 0/3 | 0/3 | 9/9 | 3.0 s | 9/9 | 0 | 239 ms | 55 ms |
+| cpu-contention | 0/3 | 0/3 | 9/9 | 3.0 s | 7/9 | 0 | 226 ms | 56 ms |
 | cpu-throttle | 0/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 2000 ms | 27 ms |
-| dep-slow | 0/3 | 0/3 | 9/9 | 2.9 s | n/a | 0 | 632 ms | 637 ms |
-| dns-break | 0/3 | 3/3 | 9/9 | 6.0 s | 9/9 | 0 | 1004 ms | 32 ms |
-| io-throttle | 0/3 | 0/3 | 9/9 | 3.0 s | 9/9 | 1 | 2001 ms | 27 ms |
-| mem-pressure | 3/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 34 ms | 31 ms |
-| net-delay | 0/3 | 0/3 | 9/9 | 3.0 s | 0/9 | 0 | 431 ms | 27 ms |
-| net-loss | 0/3 | 0/3 | 9/9 | 3.0 s | 8/9 | 0 | 39 ms | 24 ms |
-| pool-leak | 0/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 1003 ms | 26 ms |
+| dep-slow | 0/3 | 0/3 | 9/9 | 2.9 s | n/a | 0 | 629 ms | 632 ms |
+| dns-break | 0/3 | 3/3 | 9/9 | 7.0 s | 9/9 | 0 | 1004 ms | 31 ms |
+| io-throttle | 0/3 | 0/3 | 9/9 | 3.0 s | 9/9 | 1 | 2001 ms | 30 ms |
+| mem-pressure | 3/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 42 ms | 24 ms |
+| net-delay | 0/3 | 0/3 | 9/9 | 3.0 s | 0/9 | 0 | 431 ms | 31 ms |
+| net-loss | 0/3 | 0/3 | 9/9 | 3.0 s | 7/9 | 0 | 44 ms | 19 ms |
+| pool-leak | 0/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 1003 ms | 30 ms |
+| cpu-contention | 3/3 | 3.0 s | 3/3 | 3.1 s | 226 ms | 227 ms |
+| cpu-throttle | 3/3 | 3.0 s | 3/3 | 3.1 s | 2000 ms | 2000 ms |
 
 With no fault running on a warmed-up fleet, no host was flagged in 11 host-hours. That's a small sample: it fits a true rate of up to about 0.27 per host-hour, or about 5 false suspects an hour across 20 hosts. For `dep-slow`, a shared dependency problem, "caught" means a fleet alert, and Graywatch drained nothing in any of the nine trials.
 
-Deep health checks do better than this table might suggest. On `pool-leak` and `dns-break` they end up with fewer errors than Graywatch's drains, about 0.48% against 0.73%, even though they react 6 to 7 s later. A drained host gets no traffic, so it reads as healthy and comes back after the cooldown with the fault still on, then fails requests for about 10 s until it is drained again. Graywatch's clearer advantage is on faults that deep checks can't see, such as `io-throttle`, `net-loss` and `cpu-contention`.
+Deep health checks do better than this table might suggest. On `pool-leak` and `dns-break` they end up with fewer errors than Graywatch's drains, about 0.45% against 0.79%, even though they react 4 to 7 s later. A drained host gets no traffic, so it reads as healthy and comes back after the cooldown with the fault still on, then fails requests for about 10 s until it is drained again. Graywatch's clearer advantage is on faults that deep checks can't see, such as `io-throttle`, `net-loss` and `cpu-contention`.
 
 [docs/RESULTS.md](docs/RESULTS.md) has the error rates and how to read the numbers, and [docs/data/trials.csv](docs/data/trials.csv) has every trial.
 
@@ -115,6 +117,8 @@ sudo bin/bench run -graywatchd "$PWD/bin/graywatchd" -out results/run1
 bin/bench report results/run1
 ```
 
+To compare the run queue signal, run the CPU faults with `-ebpf` and pass that directory to the report with `bench report -ebpf <dir> results/run1`. The compiled BPF objects are committed, so this needs no clang. The kernel needs BTF.
+
 The dashboard is off by default, because the benchmark's numbers come from a fleet without it. It listens on `localhost:3000` on the VM, so reach it through an SSH tunnel:
 
 ```bash
@@ -130,10 +134,12 @@ Keep ports 5140 (UDP) and 9100 firewalled from anything outside the VM. `graywat
 - HAProxy's logs are the only client view. Graywatch can't see what clients on other paths experience.
 - A host's first requests are slow, up to about 1 s for the first 2 s of traffic, so healthy hosts can go suspect when traffic starts. That really drained a healthy host once, so drains now wait 20 s after traffic starts (`-startup-grace`), and a held drain is logged as `drain_held`. The cost is that a daemon restarted during a real failure can't drain anything for 20 s. Those suspect events can still appear, and the benchmark warms up first, so its false positive numbers don't cover them.
 - Three trials per config is few. These are direct comparisons on one machine, not precise estimates.
-- `mem-pressure` at this strength nearly stalls the host, so it isn't really gray, and even the shallow check catches it in about 13 s. Its results also come from a separate run on a fresh fleet, after fixing a bug that made the fault do nothing on long-running hosts.
+- `mem-pressure` at this strength nearly stalls the host, so it isn't really gray, and even the shallow check catches it in about 16 s.
+- The category is read from one tick, the one that crosses the debounce. In 4 trials of `cpu-contention` and `net-loss`, latency was the only signal flagged on that tick, so the label came out `app`.
+- The run queue signal didn't make detection faster, as 3 s is already the fastest the debounce allows. It is off by default because it traces every context switch, though I couldn't measure a cost from it.
 
 ## What I'd do next
 
-- Add a run queue latency signal with eBPF, per cgroup, to measure CPU contention directly.
 - Add round-trip data, so `net-delay` gets the right category.
+- Read the category across several ticks instead of one.
 - Test a drained host with a little traffic before fully restoring it, which should remove most of the errors from restoring a host too early.
