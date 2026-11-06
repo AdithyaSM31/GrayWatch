@@ -18,8 +18,12 @@ func TestStateIsSavedWhenDrainsChange(t *testing.T) {
 		t.Fatalf("saved %d times with nothing to save", len(saved))
 	}
 	s.run(8, s.leakOn("app-07"))
-	if len(saved) != 1 || !slices.Equal(saved[0].Drained, []string{"app-07"}) {
+	// Once before the drain, and once after it with the drain in its history.
+	if len(saved) != 2 || !slices.Equal(saved[0].Drained, []string{"app-07"}) || !slices.Equal(saved[1].Drained, []string{"app-07"}) {
 		t.Fatalf("saved = %+v", saved)
+	}
+	if len(saved[1].History["app-07"]) != 1 {
+		t.Fatalf("history = %+v", saved[1].History)
 	}
 	s.run(70, s.healthy)
 	if last := saved[len(saved)-1]; len(last.Drained) != 0 {

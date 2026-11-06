@@ -176,8 +176,10 @@ func (pl *Planner) action(kind ActionKind, host, reason string) Action {
 	return Action{Kind: kind, Host: host, Reason: reason, DryRun: pl.policy.DryRun}
 }
 
-// worstSuspect picks the highest score. Verdicts are sorted by host, so a tie goes
-// to the first by name.
+// worstSuspect picks the highest score among servers still taking traffic. Verdicts
+// are sorted by host, so a tie goes to the first by name. A server someone else took
+// out is left alone: draining it would make it ours, and it would later be put back
+// into traffic in the middle of their maintenance.
 func (pl *Planner) worstSuspect(obs detect.Observation) (detect.Verdict, bool) {
 	var worst detect.Verdict
 	found := false
@@ -185,7 +187,7 @@ func (pl *Planner) worstSuspect(obs detect.Observation) (detect.Verdict, bool) {
 		if v.State != detect.Suspect {
 			continue
 		}
-		if _, drained := pl.drained[v.Host]; drained {
+		if _, drained := pl.drained[v.Host]; drained || pl.othersOut[v.Host] {
 			continue
 		}
 		if !found || v.Score > worst.Score {

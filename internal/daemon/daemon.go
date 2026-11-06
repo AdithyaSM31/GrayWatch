@@ -65,6 +65,7 @@ type Daemon struct {
 	lastTraffic  time.Time
 
 	serversFailing bool
+	stateUnsaved   bool // the last save failed, so it is tried again each tick
 }
 
 func New(deps Deps) *Daemon {
@@ -97,6 +98,9 @@ func OwnDrains(saved remediate.State, stats []haproxy.ServerStat) []string {
 
 // Step runs one tick. Drained hosts stay out of rotation if the daemon stops.
 func (d *Daemon) Step(ctx context.Context) {
+	if d.stateUnsaved {
+		d.saveState(d.Now())
+	}
 	d.rediscover(ctx)
 	samples := d.Collector.Tick()
 	if len(samples) == 0 {
@@ -132,13 +136,46 @@ func (d *Daemon) reconcile(ctx context.Context) {
 	}
 }
 
+// SyncState writes what the planner knows now. At startup that drops saved drains that
+// are no longer out. Left on disk, one would claim the server after a later restart if
+// a person had put it in maintenance by then. It also shows straight away if the file
+// can't be written, rather than at the first drain.
+func (d *Daemon) SyncState() {
+	d.saveState(d.Now())
+}
+
 func (d *Daemon) saveState(now time.Time) {
 	if d.SaveState == nil {
 		return
 	}
-	if err := d.SaveState(d.Planner.State(now)); err != nil {
-		log.Printf("saving state: %v", err)
+	d.write(d.Planner.State(now))
+}
+
+// saveDrainIntent records a drain before it starts, since it can take seconds and the
+// daemon can die during them. If the drain never happens the record does no harm, as a
+// restart only believes it for a server HAProxy has out of rotation.
+func (d *Daemon) saveDrainIntent(host string, now time.Time) {
+	if d.SaveState == nil {
+		return
 	}
+	s := d.Planner.State(now)
+	if !slices.Contains(s.Drained, host) {
+		s.Drained = append(s.Drained, host)
+		slices.Sort(s.Drained)
+	}
+	d.write(s)
+}
+
+// write logs only when saving starts to fail, as a retry comes every tick.
+func (d *Daemon) write(s remediate.State) {
+	if err := d.SaveState(s); err != nil {
+		if !d.stateUnsaved {
+			log.Printf("saving state, will keep trying: %v", err)
+		}
+		d.stateUnsaved = true
+		return
+	}
+	d.stateUnsaved = false
 }
 
 // noteTraffic tracks when the fleet started taking traffic. Latency is reported
@@ -233,9 +270,15 @@ func (d *Daemon) act(ctx context.Context, obs detect.Observation) {
 			}
 			continue
 		}
+		if a.Kind == remediate.Drain {
+			d.saveDrainIntent(a.Host, obs.At)
+		}
 		err := d.execute(ctx, a)
 		d.Planner.Commit(a, obs.At, err)
 		if err != nil {
+			if a.Kind == remediate.Drain {
+				d.saveState(obs.At) // takes the intent back
+			}
 			e.Type, e.Reason = events.ActionError, string(a.Kind)+": "+err.Error()
 			d.emit(e)
 			d.Metrics.CountAction(events.ActionError)
