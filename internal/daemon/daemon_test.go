@@ -448,3 +448,138 @@ func TestRestartKeepsDrainedHostOutForTheCooldown(t *testing.T) {
 		t.Fatalf("calls = %q", s.actuator.calls)
 	}
 }
+
+const testGrace = 20 * time.Second
+
+func newGraceSim(t *testing.T, p remediate.Policy) *sim {
+	t.Helper()
+	s := newSim(t, p)
+	s.d.StartupGrace = testGrace
+	return s
+}
+
+// idle runs daemon steps with no traffic at all.
+func (s *sim) idle(n int) {
+	s.t.Helper()
+	for i := 0; i < n; i++ {
+		s.clock = s.clock.Add(time.Second)
+		s.d.Step(context.Background())
+	}
+}
+
+// A host's first requests are slow, on every host, so right after traffic starts
+// the slowest one looks sick. Measured at up to 1130 ms for 2 s on a real VM, where
+// this drained a healthy host.
+func TestStartupGraceHoldsDrains(t *testing.T) {
+	s := newGraceSim(t, remediate.DefaultPolicy())
+	s.run(15, s.leakOn("app-07"))
+	if len(s.actuator.calls) != 0 {
+		t.Fatalf("calls = %q, want nothing during the grace period", s.actuator.calls)
+	}
+	if s.count(events.Drain) != 0 {
+		t.Fatalf("drain events during the grace period: %+v", s.events())
+	}
+	if s.count(events.Suspect) != 1 {
+		t.Fatalf("suspect still has to be reported: %+v", s.events())
+	}
+	held, ok := s.first(events.DrainHeld)
+	if !ok || held.Host != "app-07" || !strings.Contains(held.Reason, "grace") {
+		t.Fatalf("held event = %+v, %v", held, ok)
+	}
+	if s.count(events.DrainHeld) != 1 {
+		t.Fatalf("held %d times, want it reported once: %+v", s.count(events.DrainHeld), s.events())
+	}
+}
+
+func TestStartupGraceEndsAndAStillSickHostIsDrained(t *testing.T) {
+	s := newGraceSim(t, remediate.DefaultPolicy())
+	s.run(25, s.leakOn("app-07"))
+	if !slices.Equal(s.actuator.calls, []string{"drain app-07"}) {
+		t.Fatalf("calls = %q", s.actuator.calls)
+	}
+	drain, _ := s.first(events.Drain)
+	if took := drain.TS.Sub(startTime); took < testGrace || took > testGrace+2*time.Second {
+		t.Fatalf("drained %v after traffic began, want just after the %v grace", took, testGrace)
+	}
+}
+
+// A daemon that has been up for a while has no idea how long the fleet has.
+func TestStartupGraceStartsWithTrafficNotTheDaemon(t *testing.T) {
+	s := newGraceSim(t, remediate.DefaultPolicy())
+	s.idle(120)
+	s.run(15, s.leakOn("app-07"))
+	if len(s.actuator.calls) != 0 {
+		t.Fatalf("calls = %q", s.actuator.calls)
+	}
+}
+
+// After the grace period nothing is delayed, which is what the benchmark's
+// detection times rely on.
+func TestStartupGraceDoesNotDelayLaterFaults(t *testing.T) {
+	s := newGraceSim(t, remediate.DefaultPolicy())
+	s.run(30, s.healthy)
+	faultAt := s.clock
+	s.run(10, s.leakOn("app-07"))
+	drain, ok := s.first(events.Drain)
+	if !ok || drain.Host != "app-07" {
+		t.Fatalf("events = %+v", s.events())
+	}
+	if took := drain.TS.Sub(faultAt); took > 10*time.Second {
+		t.Fatalf("drained after %v", took)
+	}
+	if s.count(events.DrainHeld) != 0 {
+		t.Fatalf("held after the grace period: %+v", s.events())
+	}
+}
+
+// A fleet recreated under a running daemon is cold again.
+func TestStartupGraceRestartsAfterLongSilence(t *testing.T) {
+	s := newGraceSim(t, remediate.DefaultPolicy())
+	s.run(30, s.healthy)
+	s.idle(60)
+	s.run(15, s.leakOn("app-07"))
+	if len(s.actuator.calls) != 0 {
+		t.Fatalf("calls = %q", s.actuator.calls)
+	}
+}
+
+func TestStartupGraceIgnoresAShortGap(t *testing.T) {
+	s := newGraceSim(t, remediate.DefaultPolicy())
+	s.run(30, s.healthy)
+	s.idle(10)
+	s.run(10, s.leakOn("app-07"))
+	if !slices.Contains(s.actuator.calls, "drain app-07") {
+		t.Fatalf("calls = %q", s.actuator.calls)
+	}
+}
+
+func TestStartupGraceAppliesToDryRuns(t *testing.T) {
+	p := remediate.DefaultPolicy()
+	p.DryRun = true
+	s := newGraceSim(t, p)
+	s.run(15, s.leakOn("app-07"))
+	if s.count(events.Drain) != 0 || s.count(events.DrainHeld) != 1 {
+		t.Fatalf("events = %+v", s.events())
+	}
+	s.run(10, s.leakOn("app-07"))
+	if drain, ok := s.first(events.Drain); !ok || !drain.DryRun {
+		t.Fatalf("drain = %+v, %v", drain, ok)
+	}
+}
+
+// A fleet alert is only a report, and a shared problem at startup is worth reporting.
+func TestStartupGraceStillRaisesFleetAlerts(t *testing.T) {
+	s := newGraceSim(t, remediate.DefaultPolicy())
+	s.run(10, func(string) (int, int) { return 700, 200 })
+	if s.count(events.FleetAlert) != 1 {
+		t.Fatalf("events = %+v", s.events())
+	}
+}
+
+func TestNoStartupGraceByDefault(t *testing.T) {
+	s := newSim(t, remediate.DefaultPolicy())
+	s.run(10, s.leakOn("app-07"))
+	if !slices.Contains(s.actuator.calls, "drain app-07") {
+		t.Fatalf("calls = %q", s.actuator.calls)
+	}
+}

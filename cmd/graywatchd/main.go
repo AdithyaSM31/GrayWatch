@@ -35,16 +35,17 @@ func main() {
 	metricsAddr := flag.String("metrics", ":9100", "Prometheus metrics address")
 	eventsPath := flag.String("events", "events.jsonl", "event log file")
 	dryRun := flag.Bool("dry-run", false, "detect and report, but change nothing in HAProxy")
+	startupGrace := flag.Duration("startup-grace", 20*time.Second, "hold drains for this long after traffic starts")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *addr, *backend, *logListen, *metricsAddr, *eventsPath, *interval, *dryRun); err != nil {
+	if err := run(ctx, *addr, *backend, *logListen, *metricsAddr, *eventsPath, *interval, *startupGrace, *dryRun); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, addr, backend, logListen, metricsAddr, eventsPath string, interval time.Duration, dryRun bool) error {
+func run(ctx context.Context, addr, backend, logListen, metricsAddr, eventsPath string, interval, startupGrace time.Duration, dryRun bool) error {
 	client := &haproxy.Client{Addr: addr, Timeout: 2 * time.Second}
 	stats, err := client.ShowStat(ctx, backend)
 	if err != nil {
@@ -75,6 +76,8 @@ func run(ctx context.Context, addr, backend, logListen, metricsAddr, eventsPath 
 		Events:    events.NewWriter(file),
 		Metrics:   metrics.New(registry),
 		Now:       time.Now,
+
+		StartupGrace: startupGrace,
 	})
 
 	errc := make(chan error, 2)

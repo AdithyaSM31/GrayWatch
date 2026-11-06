@@ -31,7 +31,7 @@ Every second, `graywatchd` reads seven signals per host: p90 latency and error r
 
 It scores each signal with a robust z-score against the other hosts, and a host becomes suspect when it is flagged in 3 of the last 5 ticks. Because hosts are compared with each other, a problem shared by every host doesn't single anyone out. So the fleet's median latency and error rate have their own limits, and breaching one raises a fleet alert and blocks drains.
 
-Drains go through HAProxy's runtime API with limits on how much damage they can do. At most 10% of the fleet can be out at once, and nothing drains while more than 30% of hosts look sick. Actions are at least 10 s apart, a host waits out a 60 s cooldown before coming back, and a host drained 3 times in 10 minutes stays out and raises an alert.
+Drains go through HAProxy's runtime API with limits on how much damage they can do. At most 10% of the fleet can be out at once, and nothing drains while more than 30% of hosts look sick or in the first 20 s after traffic starts. Actions are at least 10 s apart, a host waits out a 60 s cooldown before coming back, and a host drained 3 times in 10 minutes stays out and raises an alert.
 
 ## Results
 
@@ -81,7 +81,7 @@ docker compose -f deploy/docker-compose.yml up -d --build --force-recreate
 
 Keep `--force-recreate` when you restart the fleet. HAProxy resolves server names only when it starts, so recreating the apps without it sends each server's traffic to the wrong container, and every server still reads `UP`.
 
-Build the tools and start some load. Give it about a minute before starting the daemon, because a freshly started fleet can look sick for its first few seconds (see Limitations). Leave out `-dry-run` to let the daemon really drain hosts:
+Build the tools, then start some load and the daemon. Leave out `-dry-run` to let the daemon really drain hosts:
 
 ```bash
 go build -o bin/ ./cmd/...
@@ -126,7 +126,7 @@ docker compose -f deploy/docker-compose.yml --profile dashboard up -d
 - The containers share one kernel and one disk, so this simulates a fleet. A fault on one host can reach its neighbours through shared resources in ways separate machines wouldn't. Writes limited hard enough slowed other hosts, and reverting `io-throttle` on an undrained host slowed the whole fleet for several seconds.
 - Network delay is diagnosed as `app`. Delay alone causes no retransmits, and without round-trip data a slow network looks like a slow application. Graywatch still detects and drains the host, but the label is wrong in all nine trials.
 - HAProxy's logs are the only client view. Graywatch can't see what clients on other paths experience.
-- A cold fleet can trigger false alarms. When I started load and the daemon together on a fleet that had just come up, four healthy hosts went suspect in the first 8 s and one was really drained, then restored 60 s later. The benchmark warms up with 60 s of traffic first, so its false positive numbers don't cover this.
+- A host's first requests are slow, up to about 1 s for the first 2 s of traffic, so healthy hosts can go suspect when traffic starts. That really drained a healthy host once, so drains now wait 20 s after traffic starts (`-startup-grace`), and a held drain is logged as `drain_held`. The cost is that a daemon restarted during a real failure can't drain anything for 20 s. Those suspect events can still appear, and the benchmark warms up first, so its false positive numbers don't cover them.
 - Three trials per config is few. These are direct comparisons on one machine, not precise estimates.
 - `mem-pressure` at this strength nearly stalls the host, so it isn't really gray, and even the shallow check catches it in about 13 s. Its results also come from a separate run on a fresh fleet, after fixing a bug that made the fault do nothing on long-running hosts.
 

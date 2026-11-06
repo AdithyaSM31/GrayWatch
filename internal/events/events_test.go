@@ -46,7 +46,7 @@ func TestEventsRoundTrip(t *testing.T) {
 func TestEventTypeNames(t *testing.T) {
 	for got, want := range map[string]string{
 		Suspect: "suspect", Healthy: "healthy", Drain: "drain", Restore: "restore", FleetAlert: "fleet_alert",
-		CapReached: "cap_reached", Flapping: "flapping", ActionError: "action_error",
+		CapReached: "cap_reached", Flapping: "flapping", ActionError: "action_error", DrainHeld: "drain_held",
 	} {
 		if got != want {
 			t.Errorf("type %q, want %q", got, want)

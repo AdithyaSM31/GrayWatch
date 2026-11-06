@@ -21,6 +21,7 @@ const (
 	CapReached  = "cap_reached"
 	Flapping    = "flapping"
 	ActionError = "action_error"
+	DrainHeld   = "drain_held"
 )
 
 type Event struct {

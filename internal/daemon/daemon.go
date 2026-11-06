@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -16,7 +17,14 @@ import (
 	"github.com/AdithyaSM31/graywatch/internal/remediate"
 )
 
-const rediscoverEvery = 30 * time.Second
+const (
+	rediscoverEvery = 30 * time.Second
+
+	// trafficGap is how long the fleet must be silent before new traffic counts as
+	// starting over. Containers recreated under a running daemon take about this
+	// long, and they are cold again.
+	trafficGap = 30 * time.Second
+)
 
 type Deps struct {
 	Discover  func(ctx context.Context) ([]fleet.Host, error)
@@ -27,6 +35,12 @@ type Deps struct {
 	Events    *events.Writer
 	Metrics   *metrics.Metrics
 	Now       func() time.Time
+
+	// StartupGrace holds drains for this long after traffic starts. A host's first
+	// requests are slow on every host, by up to 1130 ms for 2 s on a real VM, so the
+	// slowest one looks sick. The signal window and debounce carry that to about
+	// 10 s. Zero means no grace period.
+	StartupGrace time.Duration
 }
 
 type Daemon struct {
@@ -34,6 +48,8 @@ type Daemon struct {
 	lastDiscover time.Time
 	states       map[string]detect.HostState
 	repeating    map[string]bool
+	trafficSince time.Time
+	lastTraffic  time.Time
 }
 
 func New(deps Deps) *Daemon {
@@ -61,7 +77,30 @@ func (d *Daemon) Step(ctx context.Context) {
 	obs := d.Detector.Observe(samples, d.Planner.Drained())
 	d.Metrics.Record(samples, obs)
 	d.emitTransitions(obs)
+	d.noteTraffic(samples, obs.At)
 	d.act(ctx, obs)
+}
+
+// noteTraffic tracks when the fleet started taking traffic. Latency is reported
+// only for a host with recent requests, so it tells whether traffic is flowing.
+func (d *Daemon) noteTraffic(samples []collect.Sample, at time.Time) {
+	withTraffic := 0
+	for _, s := range samples {
+		if _, ok := s.Values[collect.SigLatP90]; ok {
+			withTraffic++
+		}
+	}
+	if withTraffic*2 < len(samples) {
+		return
+	}
+	if d.lastTraffic.IsZero() || at.Sub(d.lastTraffic) > trafficGap {
+		d.trafficSince = at
+	}
+	d.lastTraffic = at
+}
+
+func (d *Daemon) inStartupGrace(at time.Time) bool {
+	return d.StartupGrace > 0 && !d.trafficSince.IsZero() && at.Sub(d.trafficSince) < d.StartupGrace
 }
 
 // rediscover keeps the current hosts on a failed or empty result. A docker
@@ -109,6 +148,17 @@ func (d *Daemon) act(ctx context.Context, obs detect.Observation) {
 	repeating := map[string]bool{}
 	for _, a := range d.Planner.Plan(obs) {
 		e := eventFor(a, obs)
+		if a.Kind == remediate.Drain && d.inStartupGrace(obs.At) {
+			// Not committed, so the planner proposes it again once the grace ends.
+			key := events.DrainHeld + "/" + a.Host
+			repeating[key] = true
+			if !d.repeating[key] {
+				e.Type = events.DrainHeld
+				e.Reason = fmt.Sprintf("%s, held by the %v startup grace", a.Reason, d.StartupGrace)
+				d.emit(e)
+			}
+			continue
+		}
 		if a.DryRun || (a.Kind != remediate.Drain && a.Kind != remediate.Restore) {
 			// The same alert or dry-run action comes back every tick while the
 			// condition lasts. Report it when it starts, not once a second.
