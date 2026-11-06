@@ -22,18 +22,79 @@ import (
 
 const usage = `Usage:
   bench run -scenarios bench/scenarios -trials 3 -configs shallow:detect,shallow:remediate,deep:detect -seed 42 -out results/<date> [-only pool-leak,net-loss]
+  bench report [-scenarios bench/scenarios] [-out docs/RESULTS.md] results/<date>
 `
 
+const fleetSize = 20
+
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "run" {
+	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	if err := run(ctx, os.Args[2:]); err != nil {
+	var err error
+	switch os.Args[1] {
+	case "run":
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		err = run(ctx, os.Args[2:])
+	case "report":
+		err = report(os.Args[2:])
+	default:
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// report turns a results directory's trials.csv into a Markdown file. A notes.md
+// beside it is added at the end.
+func report(args []string) error {
+	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
+	scenarioDir := fs.String("scenarios", "bench/scenarios", "directory of scenario files")
+	out := fs.String("out", filepath.Join("docs", "RESULTS.md"), "file to write")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	dir := fs.Arg(0)
+
+	f, err := os.Open(filepath.Join(dir, "trials.csv"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	results, err := bench.ReadTrialsCSV(f)
+	if err != nil {
+		return err
+	}
+
+	scenarios, err := bench.LoadScenarios(*scenarioDir)
+	if err != nil {
+		return err
+	}
+	var window time.Duration
+	for _, sc := range scenarios {
+		if sc.Target == bench.TargetNone {
+			window = sc.Baseline + sc.FaultDur + sc.Cooldown
+		}
+	}
+
+	notes, err := os.ReadFile(filepath.Join(dir, "notes.md"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	text, err := bench.Report(results, fleetSize, window, string(notes))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(*out, []byte(text), 0o644)
 }
 
 func run(ctx context.Context, args []string) error {
@@ -83,7 +144,7 @@ func run(ctx context.Context, args []string) error {
 	world := &bench.RealWorld{
 		DeployDir:  *deployDir,
 		DaemonPath: *daemonPath,
-		FleetSize:  20,
+		FleetSize:  fleetSize,
 		Backend:    "be_app",
 		HAProxy:    &haproxy.Client{Addr: *addr, Timeout: 2 * time.Second},
 		Chaos:      chaos.Env{Run: chaos.ExecRunner{}, Post: chaos.HTTPPost, IODevice: *ioDevice, StateDir: *stateDir},

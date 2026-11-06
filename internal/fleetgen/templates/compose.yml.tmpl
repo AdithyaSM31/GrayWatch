@@ -45,3 +45,27 @@ services:
 {{- range .Hosts}}
       - {{.}}
 {{- end}}
+
+  # The dashboard is opt-in: docker compose --profile dashboard up -d
+  # The benchmark's results come from a fleet without it.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: [dashboard]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: [dashboard]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/graywatch.json:/var/lib/grafana/dashboards/graywatch.json:ro
+    depends_on:
+      - prometheus

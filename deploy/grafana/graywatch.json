@@ -1,0 +1,106 @@
+{
+  "uid": "graywatch",
+  "title": "Graywatch",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "annotations": {
+    "list": [
+      {
+        "name": "Actions",
+        "enable": true,
+        "iconColor": "red",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "increase(graywatch_actions_total[15s]) > 0",
+        "step": "5s",
+        "titleFormat": "{{kind}}",
+        "useValueForTime": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Worst robust z-score by host",
+      "description": "Each row is a host. A host is flagged at 3.5.",
+      "type": "status-history",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max by (host) (graywatch_robust_z)",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "maxDataPoints": 200,
+      "options": { "showValue": "never", "rowHeight": 0.9, "colWidth": 1, "legend": { "showLegend": false } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "dark-green", "value": null },
+              { "color": "yellow", "value": 3.5 },
+              { "color": "orange", "value": 10 },
+              { "color": "dark-red", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Suspect state by host",
+      "type": "state-timeline",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "graywatch_host_suspect",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "options": { "showValue": "never", "rowHeight": 0.9, "mergeValues": true, "legend": { "showLegend": false } },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "healthy", "color": "dark-green", "index": 0 },
+                "1": { "text": "suspect", "color": "dark-red", "index": 1 }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Client p90 latency by host",
+      "description": "From HAProxy's request log. A drained host has no line, because it has no traffic.",
+      "type": "timeseries",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "graywatch_signal{signal=\"lat_p90_ms\"}",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "options": { "legend": { "showLegend": false }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "showPoints": "never", "spanNulls": false } }, "overrides": [] }
+    }
+  ]
+}

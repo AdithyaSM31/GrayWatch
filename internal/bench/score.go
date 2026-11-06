@@ -112,15 +112,16 @@ func Score(sc Scenario, target string, tBase, t0, t1 time.Time, evs []events.Eve
 	return r
 }
 
+var trialColumns = []string{
+	"scenario", "mode", "health", "target", "trial",
+	"hc_detected", "hc_ttd_ms", "gw_detected", "gw_ttd_ms", "gw_category", "category_ok",
+	"false_pos_hosts", "drains", "fleet_alert", "p50_ms", "p99_ms", "err_rate", "baseline_p99_ms",
+}
+
 // WriteTrialsCSV writes durations in whole milliseconds.
 func WriteTrialsCSV(w io.Writer, rs []TrialResult) error {
 	cw := csv.NewWriter(w)
-	header := []string{
-		"scenario", "mode", "health", "target", "trial",
-		"hc_detected", "hc_ttd_ms", "gw_detected", "gw_ttd_ms", "gw_category", "category_ok",
-		"false_pos_hosts", "drains", "fleet_alert", "p50_ms", "p99_ms", "err_rate", "baseline_p99_ms",
-	}
-	if err := cw.Write(header); err != nil {
+	if err := cw.Write(trialColumns); err != nil {
 		return err
 	}
 	ms := func(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }

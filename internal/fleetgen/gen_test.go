@@ -2,7 +2,9 @@ package fleetgen
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -91,8 +93,8 @@ func parseCompose(t *testing.T, n int) composeFile {
 
 func TestRenderComposeAppServices(t *testing.T) {
 	f := parseCompose(t, 20)
-	if len(f.Services) != 23 {
-		t.Fatalf("got %d services, want 23 (20 apps, postgres, dep, haproxy)", len(f.Services))
+	if len(f.Services) != 25 {
+		t.Fatalf("got %d services, want 25 (20 apps, postgres, dep, haproxy, prometheus, grafana)", len(f.Services))
 	}
 	app, ok := f.Services["app-07"]
 	if !ok {
@@ -120,7 +122,8 @@ func TestRenderComposeAppServices(t *testing.T) {
 func TestRenderComposePublishesOnlyHAProxy(t *testing.T) {
 	f := parseCompose(t, 20)
 	for name, svc := range f.Services {
-		if name != "haproxy" && len(svc.Ports) != 0 {
+		// Grafana is opt-in and stays on localhost: TestRenderComposeDashboardIsOptIn.
+		if name != "haproxy" && name != "grafana" && len(svc.Ports) != 0 {
 			t.Errorf("%s publishes ports %v", name, svc.Ports)
 		}
 	}
@@ -159,6 +162,120 @@ func TestRenderComposePostgresAllowsWholeFleet(t *testing.T) {
 func TestRenderComposeDepContainerName(t *testing.T) {
 	if got := parseCompose(t, 20).Services["dep"].ContainerName; got != "dep" {
 		t.Errorf("dep container_name = %q, want dep", got)
+	}
+}
+
+// The benchmark's results come from a fleet without these two, on a VM with little
+// CPU to spare, so a plain `up` must not start them.
+func TestRenderComposeDashboardIsOptIn(t *testing.T) {
+	compose, _, err := Render(2, "shallow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]struct {
+			Profiles   []string `yaml:"profiles"`
+			Ports      []string `yaml:"ports"`
+			ExtraHosts []string `yaml:"extra_hosts"`
+			Volumes    []string `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(compose, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"prometheus", "grafana"} {
+		s, ok := doc.Services[name]
+		if !ok {
+			t.Fatalf("no %s service", name)
+		}
+		if len(s.Profiles) != 1 || s.Profiles[0] != "dashboard" {
+			t.Errorf("%s profiles = %q, want dashboard", name, s.Profiles)
+		}
+		for _, port := range s.Ports {
+			if !strings.HasPrefix(port, "127.0.0.1:") {
+				t.Errorf("%s publishes %q beyond localhost", name, port)
+			}
+		}
+	}
+	if !slices.Contains(doc.Services["prometheus"].ExtraHosts, "host.docker.internal:host-gateway") {
+		t.Error("prometheus cannot reach graywatchd on the host")
+	}
+	if len(doc.Services["app-01"].Profiles) != 0 || len(doc.Services["haproxy"].Profiles) != 0 {
+		t.Error("the fleet itself must not need a profile")
+	}
+}
+
+// The compose file mounts these by path, and docker would quietly create an empty
+// directory in place of a missing file.
+func TestDashboardFilesExistAndAgree(t *testing.T) {
+	root := filepath.Join("..", "..", "deploy")
+	compose, _, err := Render(1, "shallow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"prometheus.yml", "grafana/provisioning", "grafana/graywatch.json"} {
+		if !strings.Contains(string(compose), "./"+rel+":") {
+			t.Errorf("compose does not mount ./%s", rel)
+		}
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Error(err)
+		}
+	}
+
+	prom, err := os.ReadFile(filepath.Join(root, "prometheus.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prom), "host.docker.internal:9100") {
+		t.Errorf("prometheus.yml does not scrape graywatchd:\n%s", prom)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "grafana", "graywatch.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dash struct {
+		UID    string `json:"uid"`
+		Panels []struct {
+			Title   string `json:"title"`
+			Type    string `json:"type"`
+			Targets []struct {
+				Expr string `json:"expr"`
+			} `json:"targets"`
+		} `json:"panels"`
+		Annotations struct {
+			List []struct {
+				Expr string `json:"expr"`
+			} `json:"list"`
+		} `json:"annotations"`
+	}
+	if err := json.Unmarshal(data, &dash); err != nil {
+		t.Fatal(err)
+	}
+	wantExprs := map[string]string{
+		"graywatch_robust_z":                    "status-history",
+		"graywatch_host_suspect":                "state-timeline",
+		`graywatch_signal{signal="lat_p90_ms"}`: "timeseries",
+	}
+	for want, panelType := range wantExprs {
+		found := false
+		for _, p := range dash.Panels {
+			for _, target := range p.Targets {
+				if strings.Contains(target.Expr, want) && p.Type == panelType {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %s panel querying %s", panelType, want)
+		}
+	}
+	annotated := false
+	for _, a := range dash.Annotations.List {
+		annotated = annotated || strings.Contains(a.Expr, "graywatch_actions_total")
+	}
+	if !annotated {
+		t.Error("no annotations from graywatch_actions_total")
 	}
 }
 
