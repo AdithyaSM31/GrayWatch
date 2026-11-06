@@ -78,6 +78,9 @@ func (c *Client) ShowStat(ctx context.Context, backend string) ([]ServerStat, er
 	if err != nil {
 		return nil, fmt.Errorf("show stat: %w", err)
 	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("show stat: no header in reply %q", strings.TrimSpace(reply))
+	}
 
 	columns := map[string]int{}
 	for i, name := range rows[0] {
@@ -144,6 +147,11 @@ func (c *Client) SetState(ctx context.Context, backend, server string, s State) 
 	reply, err := c.command(ctx, fmt.Sprintf("set server %s/%s state %s", backend, server, s))
 	if err != nil {
 		return err
+	}
+	// Measured on HAProxy 2.8: success is exactly "\n". A connection that closes
+	// with nothing at all means the command may never have run.
+	if reply == "" {
+		return fmt.Errorf("set server %s/%s state %s: connection closed with no reply", backend, server, s)
 	}
 	if text := strings.TrimSpace(reply); text != "" {
 		return fmt.Errorf("set server %s/%s state %s: %s", backend, server, s, text)

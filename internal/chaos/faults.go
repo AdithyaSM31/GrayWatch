@@ -158,7 +158,8 @@ func applyMemPressure(ctx context.Context, e Env, h fleet.Host) (map[string]stri
 		return nil, err
 	}
 	if err := e.Post(ctx, adminURL(h, fmt.Sprintf("memhog?mb=%d", memHogMB))); err != nil {
-		return nil, errors.Join(err, restoreMemHigh(ctx, e, h, old))
+		// An interrupt during the hook must not leave the limit on and the hog running.
+		return nil, errors.Join(err, restoreMemHigh(context.WithoutCancel(ctx), e, h, old))
 	}
 	return map[string]string{"memory.high": old}, nil
 }

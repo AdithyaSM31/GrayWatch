@@ -24,6 +24,10 @@ const (
 	// starting over. Containers recreated under a running daemon take about this
 	// long, and they are cold again.
 	trafficGap = 30 * time.Second
+
+	// discoverTimeout bounds a docker call. dockerd can stall under the same disk or
+	// memory trouble this tool looks for, and the daemon must keep ticking.
+	discoverTimeout = 10 * time.Second
 )
 
 type Deps struct {
@@ -41,6 +45,10 @@ type Deps struct {
 	// slowest one looks sick. The signal window and debounce carry that to about
 	// 10 s. Zero means no grace period.
 	StartupGrace time.Duration
+
+	// Servers reads HAProxy's view of the backend each tick, so the planner's
+	// limits count what is really out of rotation. Nil means it isn't read.
+	Servers func(ctx context.Context) ([]haproxy.ServerStat, error)
 }
 
 type Daemon struct {
@@ -50,6 +58,8 @@ type Daemon struct {
 	repeating    map[string]bool
 	trafficSince time.Time
 	lastTraffic  time.Time
+
+	serversFailing bool
 }
 
 func New(deps Deps) *Daemon {
@@ -74,11 +84,30 @@ func (d *Daemon) Step(ctx context.Context) {
 	if len(samples) == 0 {
 		return
 	}
+	d.reconcile(ctx)
 	obs := d.Detector.Observe(samples, d.Planner.Drained())
 	d.Metrics.Record(samples, obs)
 	d.emitTransitions(obs)
 	d.noteTraffic(samples, obs.At)
 	d.act(ctx, obs)
+}
+
+// reconcile keeps the last reading if this one fails, and logs only when the read
+// starts failing, as it would otherwise repeat every second.
+func (d *Daemon) reconcile(ctx context.Context) {
+	if d.Servers == nil {
+		return
+	}
+	stats, err := d.Servers(ctx)
+	if err != nil {
+		if !d.serversFailing && ctx.Err() == nil {
+			log.Printf("reading HAProxy: %v", err)
+		}
+		d.serversFailing = true
+		return
+	}
+	d.serversFailing = false
+	d.Planner.Reconcile(stats)
 }
 
 // noteTraffic tracks when the fleet started taking traffic. Latency is reported
@@ -111,6 +140,8 @@ func (d *Daemon) rediscover(ctx context.Context) {
 		return
 	}
 	d.lastDiscover = now
+	ctx, cancel := context.WithTimeout(ctx, discoverTimeout)
+	defer cancel()
 	hosts, err := d.Discover(ctx)
 	switch {
 	case err != nil:

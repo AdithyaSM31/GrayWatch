@@ -203,10 +203,26 @@ func TestSetStateErrorOnReply(t *testing.T) {
 	}
 }
 
-func TestSetStateAcceptsEmptyReply(t *testing.T) {
-	addr, _ := fakeRuntime(t, "")
+func TestSetStateAcceptsABlankLine(t *testing.T) {
+	addr, _ := fakeRuntime(t, "\n")
 	if err := newClient(addr).SetState(context.Background(), "be_app", "app-03", Ready); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// HAProxy dying mid-command looks like this, and the host would stay in rotation
+// while the planner recorded it as drained.
+func TestSetStateRejectsNoReplyAtAll(t *testing.T) {
+	addr, _ := fakeRuntime(t, "")
+	if err := newClient(addr).SetState(context.Background(), "be_app", "app-03", Ready); err == nil {
+		t.Fatal("want error")
+	}
+}
+
+func TestShowStatRejectsAHeaderlessReply(t *testing.T) {
+	addr, _ := fakeRuntime(t, "# \n")
+	if _, err := newClient(addr).ShowStat(context.Background(), "be_app"); err == nil {
+		t.Fatal("want error")
 	}
 }
 

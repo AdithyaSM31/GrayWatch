@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -593,5 +594,48 @@ func TestCheckServerMapping(t *testing.T) {
 	extra := map[string]string{"app-01": "172.18.0.2", "app-02": "172.18.0.3", "app-03": "172.18.0.4"}
 	if err := CheckServerMapping(extra, hosts); err == nil {
 		t.Fatal("a server with no container must fail")
+	}
+}
+
+// A drain in flight when the interrupt lands can finish after the first set-ready,
+// which would leave a server out after a "clean" stop.
+func TestInterruptSetsServersReadyAgainAfterStoppingTheDaemon(t *testing.T) {
+	h := newHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.w.cancel = cancel
+	sc := oneFault()
+	h.w.cancelWait = sc.FaultDur
+	if _, err := h.o.Run(ctx, []Scenario{sc}, []Config{shallowDetect}, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	calls := h.w.actions()
+	stop := indexAfter(calls, 0, "stop")
+	if stop < 0 || indexAfter(calls, stop, "set-ready") < 0 {
+		t.Fatalf("no set-ready after stop: %q", calls)
+	}
+}
+
+func TestCheckOutputProtectsEarlierResults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trials.csv")
+	if err := CheckOutput(path, false); err != nil {
+		t.Fatalf("no file yet: %v", err)
+	}
+	if err := SaveTrialsCSV(path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckOutput(path, false); err != nil {
+		t.Fatalf("header only: %v", err)
+	}
+	if err := SaveTrialsCSV(path, []TrialResult{{Scenario: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	err := CheckOutput(path, false)
+	if err == nil || !strings.Contains(err.Error(), "-force") {
+		t.Fatalf("err = %v, want it to refuse and mention -force", err)
+	}
+	if err := CheckOutput(path, true); err != nil {
+		t.Fatalf("with force: %v", err)
 	}
 }

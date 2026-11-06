@@ -7,9 +7,11 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/AdithyaSM31/graywatch/internal/detect"
+	"github.com/AdithyaSM31/graywatch/internal/haproxy"
 )
 
 // capEpsilon stops floating point error from losing a host in the drain cap:
@@ -59,6 +61,9 @@ type Planner struct {
 	history     map[string][]time.Time
 	flapAlerted map[string]bool
 	lastAction  time.Time
+	retryAt     map[string]time.Time // when a failed restore may be tried again
+	othersOut   map[string]bool      // out of rotation, but not drained by the planner
+	down        map[string]bool      // failing HAProxy's health checks
 }
 
 // NewPlanner starts with the servers HAProxy already has out of rotation, which
@@ -71,11 +76,38 @@ func NewPlanner(p Policy, fleetSize int, alreadyDrained []string, now time.Time)
 		drained:     map[string]time.Time{},
 		history:     map[string][]time.Time{},
 		flapAlerted: map[string]bool{},
+		retryAt:     map[string]time.Time{},
 	}
 	for _, host := range alreadyDrained {
 		pl.drained[host] = now
 	}
 	return pl
+}
+
+// Reconcile updates the planner from what HAProxy reports. A server back in
+// rotation is no longer drained, which covers HAProxy restarting and a person
+// setting it back. Servers out for any other reason count against the guards: the
+// limits are about how much of the fleet is out, whoever took it out. A server
+// taken out by its health check also reads healthy here, because it has no traffic.
+func (pl *Planner) Reconcile(stats []haproxy.ServerStat) {
+	pl.othersOut = map[string]bool{}
+	pl.down = map[string]bool{}
+	for _, s := range stats {
+		out := strings.HasPrefix(s.Status, "DRAIN") || strings.HasPrefix(s.Status, "MAINT") || s.Down()
+		if s.Down() {
+			pl.down[s.Name] = true
+		}
+		if _, ours := pl.drained[s.Name]; ours {
+			if !out {
+				delete(pl.drained, s.Name)
+				delete(pl.retryAt, s.Name)
+			}
+			continue
+		}
+		if out {
+			pl.othersOut[s.Name] = true
+		}
+	}
 }
 
 func (pl *Planner) cap() int {
@@ -87,19 +119,22 @@ func (pl *Planner) cap() int {
 func (pl *Planner) Plan(obs detect.Observation) []Action {
 	now := obs.At
 	verdicts := make(map[string]detect.Verdict, len(obs.Verdicts))
-	suspects := 0
+	sick := maps.Clone(pl.down)
+	if sick == nil {
+		sick = map[string]bool{}
+	}
 	for _, v := range obs.Verdicts {
 		verdicts[v.Host] = v
 		if v.State == detect.Suspect {
-			suspects++
+			sick[v.Host] = true
 		}
 	}
 
 	if obs.Fleet != nil {
 		return []Action{pl.action(AlertFleetWide, "", obs.Fleet.Reason)}
 	}
-	if float64(suspects) > pl.policy.FleetWideFrac*float64(pl.fleetSize) {
-		return []Action{pl.action(AlertFleetWide, "", fmt.Sprintf("%d of %d hosts are suspect", suspects, pl.fleetSize))}
+	if float64(len(sick)) > pl.policy.FleetWideFrac*float64(pl.fleetSize) {
+		return []Action{pl.action(AlertFleetWide, "", fmt.Sprintf("%d of %d hosts are suspect or down", len(sick), pl.fleetSize))}
 	}
 	if !pl.lastAction.IsZero() && now.Sub(pl.lastAction) < pl.policy.MinActionGap {
 		return nil
@@ -108,7 +143,7 @@ func (pl *Planner) Plan(obs detect.Observation) []Action {
 	var actions []Action
 	for _, host := range slices.Sorted(maps.Keys(pl.drained)) {
 		// A host with no verdict reads as neither state, so it is not restored.
-		if verdicts[host].State != detect.Healthy || now.Sub(pl.drained[host]) < pl.policy.Cooldown {
+		if verdicts[host].State != detect.Healthy || now.Sub(pl.drained[host]) < pl.policy.Cooldown || now.Before(pl.retryAt[host]) {
 			continue
 		}
 		if drains := pl.recentDrains(host, now); drains >= pl.policy.MaxDrainsPerWindow {
@@ -118,15 +153,20 @@ func (pl *Planner) Plan(obs detect.Observation) []Action {
 			}
 			continue
 		}
-		return append(actions, pl.action(Restore, host, fmt.Sprintf("healthy for the %v cooldown", pl.policy.Cooldown)))
+		actions = append(actions, pl.action(Restore, host, fmt.Sprintf("healthy for the %v cooldown", pl.policy.Cooldown)))
+		// A dry run changes nothing, so this restore comes back every tick. It must
+		// not hide the drains behind it.
+		if !pl.policy.DryRun {
+			return actions
+		}
 	}
 
 	target, ok := pl.worstSuspect(obs)
 	if !ok {
 		return actions
 	}
-	if len(pl.drained) >= pl.cap() {
-		reason := fmt.Sprintf("%d of %d hosts already drained", len(pl.drained), pl.fleetSize)
+	if out := len(pl.drained) + len(pl.othersOut); out >= pl.cap() {
+		reason := fmt.Sprintf("%d of %d hosts already out of rotation", out, pl.fleetSize)
 		return append(actions, pl.action(AlertCapReached, target.Host, reason))
 	}
 	return append(actions, pl.action(Drain, target.Host, fmt.Sprintf("suspect with score %.1f", target.Score)))
@@ -165,9 +205,13 @@ func (pl *Planner) recentDrains(host string, now time.Time) int {
 	return n
 }
 
-// Commit records the outcome of an action. A failed action changes nothing, so
-// it is retried on the next tick with no gap, and neither does a dry run.
+// Commit records the outcome of an action. A failed action changes nothing, and
+// neither does a dry run. A failed drain is retried on the next tick with no gap.
+// A failed restore waits, so that it can't hide drains behind it every tick.
 func (pl *Planner) Commit(a Action, at time.Time, err error) {
+	if err != nil && a.Kind == Restore {
+		pl.retryAt[a.Host] = at.Add(pl.policy.MinActionGap)
+	}
 	if err != nil || a.DryRun {
 		return
 	}
@@ -179,6 +223,7 @@ func (pl *Planner) Commit(a Action, at time.Time, err error) {
 	case Restore:
 		delete(pl.drained, a.Host)
 		delete(pl.flapAlerted, a.Host)
+		delete(pl.retryAt, a.Host)
 		pl.lastAction = at
 	case AlertFlapping:
 		pl.flapAlerted[a.Host] = true

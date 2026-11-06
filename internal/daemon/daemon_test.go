@@ -583,3 +583,67 @@ func TestNoStartupGraceByDefault(t *testing.T) {
 		t.Fatalf("calls = %q", s.actuator.calls)
 	}
 }
+
+// HAProxy restarted: a host the planner called drained is back in rotation and still
+// failing. Without reading HAProxy, it would never be drained again.
+func TestReconcileRedrainsAHostBackInRotation(t *testing.T) {
+	s := newSim(t, remediate.DefaultPolicy())
+	s.run(10, s.healthy)
+	s.run(8, s.leakOn("app-07"))
+	if !s.planner.Drained()["app-07"] {
+		t.Fatalf("calls = %q", s.actuator.calls)
+	}
+	s.d.Servers = func(context.Context) ([]haproxy.ServerStat, error) {
+		return []haproxy.ServerStat{{Name: "app-07", Status: "UP"}}, nil
+	}
+	s.run(20, s.leakOn("app-07"))
+	if got := s.count(events.Drain); got < 2 {
+		t.Fatalf("drained %d times, want the host drained again: %+v", got, s.events())
+	}
+}
+
+func TestReconcileStopsDrainsAtTheCapWhenHealthChecksTookHostsOut(t *testing.T) {
+	s := newSim(t, remediate.DefaultPolicy())
+	s.d.Servers = func(context.Context) ([]haproxy.ServerStat, error) {
+		return []haproxy.ServerStat{{Name: "app-01", Status: "DOWN"}, {Name: "app-02", Status: "DOWN"}}, nil
+	}
+	s.run(10, s.healthy)
+	s.run(10, s.leakOn("app-07"))
+	if len(s.actuator.calls) != 0 {
+		t.Fatalf("calls = %q", s.actuator.calls)
+	}
+	if s.count(events.CapReached) != 1 {
+		t.Fatalf("events = %+v", s.events())
+	}
+}
+
+// A failed read must not forget what the last one said, or stop the daemon.
+func TestReconcileSurvivesAFailedRead(t *testing.T) {
+	s := newSim(t, remediate.DefaultPolicy())
+	s.run(10, s.healthy)
+	s.d.Servers = func(context.Context) ([]haproxy.ServerStat, error) { return nil, errors.New("refused") }
+	s.run(10, s.leakOn("app-07"))
+	if !slices.Contains(s.actuator.calls, "drain app-07") {
+		t.Fatalf("calls = %q", s.actuator.calls)
+	}
+}
+
+// dockerd can stall under the disk or memory trouble this tool looks for, and a
+// discovery that hung would stop every tick, drain and restore.
+func TestDiscoveryHasATimeout(t *testing.T) {
+	s := newSim(t, remediate.DefaultPolicy())
+	var deadline time.Time
+	var ok bool
+	hosts := s.hosts
+	s.discover = func(ctx context.Context) ([]fleet.Host, error) {
+		deadline, ok = ctx.Deadline()
+		return hosts, nil
+	}
+	s.run(1, s.healthy)
+	if !ok {
+		t.Fatal("discovery ran with no deadline")
+	}
+	if left := time.Until(deadline); left <= 0 || left > time.Minute {
+		t.Fatalf("deadline is %v away", left)
+	}
+}

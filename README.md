@@ -29,9 +29,9 @@ flowchart TD
 
 Every second, `graywatchd` reads seven signals per host: p90 latency and error rate from HAProxy's request log, CPU, IO and memory pressure from cgroup PSI, CPU throttling, and TCP retransmits from the container's network namespace.
 
-It scores each signal with a robust z-score against the other hosts, and a host becomes suspect when it is flagged in 3 of the last 5 ticks. Because hosts are compared with each other, a problem shared by every host doesn't single anyone out. So the fleet's median latency and error rate have their own limits, and breaching one raises a fleet alert and blocks drains.
+It scores each signal with a robust z-score against the other hosts, and a host becomes suspect when it is flagged in 3 of the last 5 ticks. Because hosts are compared with each other, a problem shared by every host doesn't single anyone out. So the fleet's median latency and error rate have their own limits, and breaching one raises a fleet alert and blocks drains and restores.
 
-Drains go through HAProxy's runtime API with limits on how much damage they can do. At most 10% of the fleet can be out at once, and nothing drains while more than 30% of hosts look sick or in the first 20 s after traffic starts. Actions are at least 10 s apart, a host waits out a 60 s cooldown before coming back, and a host drained 3 times in 10 minutes stays out and raises an alert.
+Drains go through HAProxy's runtime API with limits on how much damage they can do. At most 10% of the fleet can be out of rotation at once, whoever took it out, including hosts failing their health checks. Nothing drains while more than 30% of hosts are suspect or down, or in the first 20 s after traffic starts. Actions are at least 10 s apart, a host waits out a 60 s cooldown before coming back, and a host drained 3 times in 10 minutes stays out and raises an alert.
 
 ## Results
 
@@ -41,7 +41,7 @@ Each fault ran three times in each of three configs on one VM with 20 hosts at 6
 |---|---|---|---|---|---|---|---|---|
 | cpu-contention | 0/3 | 0/3 | 9/9 | 3.0 s | 9/9 | 0 | 239 ms | 55 ms |
 | cpu-throttle | 0/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 2000 ms | 27 ms |
-| dep-slow | 0/3 | 0/3 | 9/9 | 2.9 s | 9/9 | 0 | 632 ms | 637 ms |
+| dep-slow | 0/3 | 0/3 | 9/9 | 2.9 s | n/a | 0 | 632 ms | 637 ms |
 | dns-break | 0/3 | 3/3 | 9/9 | 6.0 s | 9/9 | 0 | 1004 ms | 32 ms |
 | io-throttle | 0/3 | 0/3 | 9/9 | 3.0 s | 9/9 | 1 | 2001 ms | 27 ms |
 | mem-pressure | 3/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 34 ms | 31 ms |
@@ -49,7 +49,7 @@ Each fault ran three times in each of three configs on one VM with 20 hosts at 6
 | net-loss | 0/3 | 0/3 | 9/9 | 3.0 s | 8/9 | 0 | 39 ms | 24 ms |
 | pool-leak | 0/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 1003 ms | 26 ms |
 
-With no fault running on a warmed-up fleet, no host was flagged in 11 host-hours. For `dep-slow`, a shared dependency problem, "caught" means a fleet alert, and Graywatch drained nothing in any of the nine trials.
+With no fault running on a warmed-up fleet, no host was flagged in 11 host-hours. That's a small sample: it fits a true rate of up to about 0.27 per host-hour, or about 5 false suspects an hour across 20 hosts. For `dep-slow`, a shared dependency problem, "caught" means a fleet alert, and Graywatch drained nothing in any of the nine trials.
 
 Deep health checks do better than this table might suggest. On `pool-leak` and `dns-break` they end up with fewer errors than Graywatch's drains, about 0.48% against 0.73%, even though they react 6 to 7 s later. A drained host gets no traffic, so it reads as healthy and comes back after the cooldown with the fault still on, then fails requests for about 10 s until it is drained again. Graywatch's clearer advantage is on faults that deep checks can't see, such as `io-throttle`, `net-loss` and `cpu-contention`.
 
@@ -105,7 +105,7 @@ sudo bin/chaos apply -fault pool-leak -host app-07
 sudo bin/chaos revert -fault pool-leak -host app-07
 ```
 
-Run the full benchmark, which takes about 4 hours, and generate the report, which replaces `docs/RESULTS.md`. Stop your own `graywatchd` and `loadgen` first, since the benchmark starts its own:
+Run the full benchmark, which takes about 4 hours, and generate the report, which replaces `docs/RESULTS.md`. Stop your own `graywatchd` and `loadgen` first, since the benchmark starts its own. It refuses to overwrite earlier results unless you pass `-force`:
 
 ```bash
 sudo bin/bench run -graywatchd "$PWD/bin/graywatchd" -out results/run1
@@ -121,12 +121,15 @@ The dashboard is off by default, because the benchmark's numbers come from a fle
 docker compose -f deploy/docker-compose.yml --profile dashboard up -d
 ```
 
+Keep ports 5140 (UDP) and 9100 firewalled from anything outside the VM. `graywatchd` runs as root and trusts the request log it receives on 5140, so anyone who can reach that port can forge log lines and get healthy hosts drained, up to the 10% limit, or raise a fleet alert that blocks drains. Port 9100 serves its metrics with no authentication.
+
 ## Limitations
 
 - The containers share one kernel and one disk, so this simulates a fleet. A fault on one host can reach its neighbours through shared resources in ways separate machines wouldn't. Writes limited hard enough slowed other hosts, and reverting `io-throttle` on an undrained host slowed the whole fleet for several seconds.
 - Network delay is diagnosed as `app`. Delay alone causes no retransmits, and without round-trip data a slow network looks like a slow application. Graywatch still detects and drains the host, but the label is wrong in all nine trials.
 - HAProxy's logs are the only client view. Graywatch can't see what clients on other paths experience.
 - A host's first requests are slow, up to about 1 s for the first 2 s of traffic, so healthy hosts can go suspect when traffic starts. That really drained a healthy host once, so drains now wait 20 s after traffic starts (`-startup-grace`), and a held drain is logged as `drain_held`. The cost is that a daemon restarted during a real failure can't drain anything for 20 s. Those suspect events can still appear, and the benchmark warms up first, so its false positive numbers don't cover them.
+- Graywatch can't tell its own drains from yours after a restart. Any server in maintenance when the daemon starts is treated as drained by Graywatch, and comes back 60 s later if it reads healthy. Don't run the daemon on a fleet with servers you've taken out by hand. A server you take out while it's running is left alone, and counts toward the 10% limit.
 - Three trials per config is few. These are direct comparisons on one machine, not precise estimates.
 - `mem-pressure` at this strength nearly stalls the host, so it isn't really gray, and even the shallow check catches it in about 13 s. Its results also come from a separate run on a fresh fleet, after fixing a bug that made the fault do nothing on long-running hosts.
 

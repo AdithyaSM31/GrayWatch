@@ -67,7 +67,15 @@ func run(ctx context.Context, addr, backend, logListen, metricsAddr, eventsPath 
 	registry := prometheus.NewRegistry()
 	d := daemon.New(daemon.Deps{
 		Discover: func(ctx context.Context) ([]fleet.Host, error) {
-			return fleet.Discover(ctx, fleet.CLIDocker{}, "/proc")
+			hosts, err := fleet.Discover(ctx, fleet.CLIDocker{}, "/proc")
+			if err == nil && len(hosts) > 0 {
+				names := make([]string, len(hosts))
+				for i, h := range hosts {
+					names[i] = h.Name
+				}
+				window.KeepOnly(names)
+			}
+			return hosts, err
 		},
 		Collector: collect.New(collect.FSKernelSource{}, window, time.Now),
 		Detector:  detect.New(detect.DefaultConfig()),
@@ -78,6 +86,9 @@ func run(ctx context.Context, addr, backend, logListen, metricsAddr, eventsPath 
 		Now:       time.Now,
 
 		StartupGrace: startupGrace,
+		Servers: func(ctx context.Context) ([]haproxy.ServerStat, error) {
+			return client.ShowStat(ctx, backend)
+		},
 	})
 
 	errc := make(chan error, 2)

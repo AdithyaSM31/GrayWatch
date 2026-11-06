@@ -95,6 +95,11 @@ func Summarize(rs []TrialResult) []Row {
 		for _, r := range all {
 			falsePos += r.FalsePosHosts
 		}
+		category := rate(all, func(r TrialResult) bool { return r.CategoryOK })
+		// A fleet alert is what catching this fault means, so the score can't fail.
+		if len(detected) > 0 && !slices.ContainsFunc(detected, func(r TrialResult) bool { return r.GWCategory != "fleet" }) {
+			category = "n/a"
+		}
 		hc := func(r TrialResult) bool { return r.HCDetected }
 		p99 := func(r TrialResult) time.Duration { return r.P99 }
 		errs := func(r TrialResult) float64 { return r.ErrRate }
@@ -103,7 +108,7 @@ func Summarize(rs []TrialResult) []Row {
 			HCShallow:       rate(detect, hc),
 			HCDeep:          rate(deep, hc),
 			Graywatch:       rate(all, func(r TrialResult) bool { return r.GWDetected }),
-			Category:        rate(all, func(r TrialResult) bool { return r.CategoryOK }),
+			Category:        category,
 			FleetAlerts:     rate(all, func(r TrialResult) bool { return r.FleetAlert }),
 			MedianTTD:       median(collect(detected, func(r TrialResult) time.Duration { return r.GWTTD })),
 			FalsePosHosts:   falsePos,

@@ -7,13 +7,13 @@ Raw results are in `docs/data/trials.csv`.
 ## How to read the tables
 
 - HC caught (shallow) counts `shallow:detect` trials only. In a remediate run Graywatch drains first, and a server in maintenance can't read as down, so those trials say nothing about the health check.
-- Graywatch caught counts all nine trials of each fault. For `dep-slow` it means a fleet alert, since no single host is at fault. It raised no drains in any trial, which is the correct behaviour.
+- Graywatch caught counts all nine trials of each fault. For `dep-slow` it means a fleet alert, since no single host is at fault. It raised no drains in any trial, which is the correct behaviour. Its category shows `n/a` because a fleet alert is what catching it means, so that score could not fail.
 - p99 detect-only is fleet-wide, not the target's. One failing host in 20 is 5% of traffic, so a p99 near a timeout means the host was still failing requests. A fault that only slows one host by less than that can barely move it.
 - Errors are fleet-wide too. 5% is about one host failing everything.
 
 ## What these results don't show
 
-- Three trials per config is few. These are direct comparisons on one machine, not estimates with error bars. No-fault windows with zero false positives bound the rate only roughly.
+- Three trials per config is few. These are direct comparisons on one machine, not estimates with error bars. Zero false positives in 11 host-hours still fits a true rate of up to about 0.27 per host-hour.
 - `mem-pressure` ran separately. Its first results were invalid: the fault's limit counted page cache, so on hosts that had run for a while it did nothing. After the fix, it was rerun alone on a fresh fleet, on different hosts. Those are the rows here.
 - `mem-pressure` isn't gray at this strength. It nearly stalls the host, so even the shallow check catches it, in about 13 s against Graywatch's 3 s.
 - `net-delay` scores 0/9 on category. Delay alone causes no retransmits, and without round-trip data the slow host looks like a slow application. Graywatch still detects and drains it.

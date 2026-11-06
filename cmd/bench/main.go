@@ -114,6 +114,7 @@ func run(ctx context.Context, args []string) error {
 	warmup := fs.Duration("warmup", time.Minute, "traffic before the first trial of each config")
 	ioDevice := fs.String("io-device", "", "MAJ:MIN of the disk for io-throttle (default: the disk holding the fleet's data)")
 	stateDir := fs.String("state-dir", "/var/lib/graywatch/chaos", "where applied faults are recorded")
+	force := fs.Bool("force", false, "replace results already in the output directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -140,6 +141,9 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	csvPath := filepath.Join(*out, "trials.csv")
+	if err := bench.CheckOutput(csvPath, *force); err != nil {
+		return err
+	}
 
 	world := &bench.RealWorld{
 		DeployDir:  *deployDir,

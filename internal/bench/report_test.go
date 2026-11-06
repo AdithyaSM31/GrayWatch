@@ -272,3 +272,13 @@ func TestReportAddsNotesAndBaseline(t *testing.T) {
 		}
 	}
 }
+
+// A fleet alert is what counts as catching this fault, so a score on its category
+// could never be anything but perfect, and would pad the table.
+func TestSummarizeShowsNoCategoryScoreForAFleetFault(t *testing.T) {
+	a := trial("dep-slow", "shallow", "detect", true, time.Second)
+	a.GWCategory, a.CategoryOK = "fleet", true
+	if r := Summarize([]TrialResult{a})[0]; r.Category != "n/a" {
+		t.Fatalf("Category = %q, want n/a", r.Category)
+	}
+}

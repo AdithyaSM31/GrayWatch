@@ -147,3 +147,37 @@ func TestWindowStatsPrunesIdleServer(t *testing.T) {
 		t.Fatalf("held = %d, want 0", got)
 	}
 }
+
+// The log arrives over UDP from anyone who can reach the port, and a flood of made-up
+// server names would otherwise grow memory without bound.
+func TestKeepOnlyDropsAndRefusesUnknownServers(t *testing.T) {
+	w := NewWindow(time.Minute)
+	at := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
+	w.Add(Req{Server: "app-01", TrMs: 10, Status: 200, At: at})
+	w.Add(Req{Server: "forged", TrMs: 10, Status: 200, At: at})
+
+	w.KeepOnly([]string{"app-01"})
+	if got := w.held("forged"); got != 0 {
+		t.Fatalf("forged held %d", got)
+	}
+	if len(w.servers) != 1 {
+		t.Fatalf("servers = %v", w.servers)
+	}
+	w.Add(Req{Server: "forged-2", TrMs: 10, Status: 200, At: at})
+	if _, ok := w.servers["forged-2"]; ok {
+		t.Fatal("an unknown server was recorded")
+	}
+	w.Add(Req{Server: "app-01", TrMs: 10, Status: 200, At: at})
+	if got := w.held("app-01"); got != 2 {
+		t.Fatalf("app-01 held %d, want 2", got)
+	}
+}
+
+// Before the first discovery the fleet is unknown, and nothing should be lost.
+func TestWindowAcceptsAnyServerBeforeKeepOnly(t *testing.T) {
+	w := NewWindow(time.Minute)
+	w.Add(Req{Server: "app-01", TrMs: 10, Status: 200, At: time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)})
+	if got := w.held("app-01"); got != 1 {
+		t.Fatalf("held %d", got)
+	}
+}

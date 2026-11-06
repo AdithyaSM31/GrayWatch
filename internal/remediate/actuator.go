@@ -29,14 +29,18 @@ type HAProxyActuator struct {
 
 // Drain lets in-flight requests finish, up to a limit, then takes the server out
 // fully. If the last step fails the server is put back: the planner will not
-// count a failed drain, so a half-drained server would escape the cap.
+// count a failed drain, so a half-drained server would escape the cap. Only the
+// wait for idle stops when ctx ends: a daemon shutting down must not leave a server
+// half drained, and cancelling a command HAProxy has already run would lose its
+// reply and report a failure. The client's own timeout bounds these calls.
 func (a *HAProxyActuator) Drain(ctx context.Context, host string) error {
-	if err := a.C.SetState(ctx, a.Backend, host, haproxy.Drain); err != nil {
+	finish := context.WithoutCancel(ctx)
+	if err := a.C.SetState(finish, a.Backend, host, haproxy.Drain); err != nil {
 		return err
 	}
 	a.waitForIdle(ctx, host)
-	if err := a.C.SetState(ctx, a.Backend, host, haproxy.Maint); err != nil {
-		return errors.Join(err, a.C.SetState(ctx, a.Backend, host, haproxy.Ready))
+	if err := a.C.SetState(finish, a.Backend, host, haproxy.Maint); err != nil {
+		return errors.Join(err, a.C.SetState(finish, a.Backend, host, haproxy.Ready))
 	}
 	return nil
 }

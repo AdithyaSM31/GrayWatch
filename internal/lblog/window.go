@@ -53,15 +53,36 @@ type Window struct {
 
 	mu      sync.Mutex
 	servers map[string][]Req
+	known   map[string]bool // nil until KeepOnly is first called
 }
 
 func NewWindow(retain time.Duration) *Window {
 	return &Window{retain: retain, servers: map[string][]Req{}}
 }
 
+// KeepOnly drops every server not named here and ignores them from now on. The log
+// comes over UDP from anyone who can reach the port, and made-up server names would
+// otherwise grow memory without bound.
+func (w *Window) KeepOnly(names []string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.known = make(map[string]bool, len(names))
+	for _, name := range names {
+		w.known[name] = true
+	}
+	for server := range w.servers {
+		if !w.known[server] {
+			delete(w.servers, server)
+		}
+	}
+}
+
 func (w *Window) Add(r Req) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.known != nil && !w.known[r.Server] {
+		return
+	}
 	w.servers[r.Server] = append(w.servers[r.Server], r)
 	w.prune(r.Server, r.At)
 }

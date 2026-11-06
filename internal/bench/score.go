@@ -2,9 +2,12 @@ package bench
 
 import (
 	"encoding/csv"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/AdithyaSM31/graywatch/internal/events"
@@ -139,6 +142,25 @@ func WriteTrialsCSV(w io.Writer, rs []TrialResult) error {
 	}
 	cw.Flush()
 	return cw.Error()
+}
+
+// CheckOutput refuses to start a run that would replace finished trials, as a run
+// saves from its first moment and a full benchmark takes hours to repeat.
+func CheckOutput(path string, force bool) error {
+	if force {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if strings.Count(string(data), "\n") > 1 {
+		return fmt.Errorf("%s already has results: choose another -out, or pass -force to replace them", path)
+	}
+	return nil
 }
 
 // SaveTrialsCSV replaces path in one step, so a crash mid-write cannot lose the

@@ -299,6 +299,8 @@ func (o *Orchestrator) cleanup(ctx context.Context, run *configRun) error {
 	if run.daemon != nil {
 		errs = append(errs, run.daemon.Stop())
 		run.daemon = nil
+		// A drain in flight above can land after the first pass.
+		errs = append(errs, o.World.SetAllReady(ctx))
 	}
 	if run.stopTasks != nil {
 		run.stopTasks()
