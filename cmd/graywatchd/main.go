@@ -122,6 +122,7 @@ func run(ctx context.Context, addr, backend, logListen string, logFrom *net.IPNe
 		},
 		SaveState: func(s remediate.State) error { return remediate.SaveState(stateFile, s) },
 	})
+	d.SyncState()
 
 	errc := make(chan error, 2)
 	go func() { errc <- lblog.ListenFrom(ctx, logListen, window, logFrom) }()

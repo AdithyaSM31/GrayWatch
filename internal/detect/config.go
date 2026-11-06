@@ -10,6 +10,7 @@ type Config struct {
 	Window, Need     int
 	MinHosts         int
 	MinMAD, MinDelta map[collect.Signal]float64
+	MinRatio         map[collect.Signal]float64 // how many times the median, if the signal has a limit
 	Category         map[collect.Signal]string
 	FleetLatencyMs   float64
 	FleetErrRate     float64
@@ -39,7 +40,13 @@ func DefaultConfig() Config {
 			collect.SigIOPSI:    0.10,
 			collect.SigMemPSI:   0.05,
 			collect.SigRetrans:  0.01,
-			collect.SigRunqP99:  3000, // healthy p99 jumps one log2 bucket (2048 us at 2048); 2000 flagged 16 of 20 healthy hosts
+			collect.SigRunqP99:  3000, // waits too short to matter, at a low median; MinRatio handles the rest
+		},
+		MinRatio: map[collect.Signal]float64{
+			// The p99 comes from a log2 histogram, so it moves by doubling and a healthy
+			// host often sits one bucket above the rest. That step is as large as the
+			// median, so no fixed MinDelta suits every median. Four times is two buckets.
+			collect.SigRunqP99: 4,
 		},
 		Category: map[collect.Signal]string{
 			collect.SigLatP90:   appCategory,

@@ -27,9 +27,10 @@ struct {
 	__type(value, __u64);
 } ready_at SEC(".maps");
 
-// Cumulative histograms by cgroup id.
+// Cumulative histograms by cgroup id. LRU, because containers come and go under a
+// long-running daemon, and a full plain hash would drop new ones without a word.
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 4096);
 	__type(key, __u64);
 	__type(value, struct hist);
@@ -95,8 +96,9 @@ int BPF_PROG(on_switch, bool preempt, struct task_struct *prev, struct task_stru
 	__u64 *start, delta_us, cgroup_id;
 	struct hist *h;
 
-	// A task preempted while still runnable is ready again straight away.
-	if (BPF_CORE_READ(prev, __state) == TASK_RUNNING)
+	// A task preempted while still runnable is ready again straight away. That includes
+	// one preempted on its way to sleep, whose state already says it isn't running.
+	if (preempt || BPF_CORE_READ(prev, __state) == TASK_RUNNING)
 		mark_ready(BPF_CORE_READ(prev, pid));
 
 	pid = BPF_CORE_READ(next, pid);

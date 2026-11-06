@@ -8,9 +8,9 @@ const (
 	// holds latencies of 2^i to 2^(i+1) microseconds.
 	Slots = 32
 
-	// MinEvents is the fewest scheduling events worth a p99. Below this, the p99 is
-	// just the slowest event: 20 is 1 event per 50 ms over a 1 s tick.
-	MinEvents = 20
+	// MinEvents is the fewest scheduling events worth a p99. Below 100, the nearest-rank
+	// p99 is just the slowest event.
+	MinEvents = 100
 )
 
 // P99 returns the upper bound of the bucket holding the nearest-rank 99th
