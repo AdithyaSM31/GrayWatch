@@ -48,8 +48,6 @@ Each fault ran three times in each of three configs on one VM with 20 hosts at 6
 | net-delay | 0/3 | 0/3 | 9/9 | 3.0 s | 0/9 | 0 | 431 ms | 31 ms |
 | net-loss | 0/3 | 0/3 | 9/9 | 3.0 s | 7/9 | 0 | 44 ms | 19 ms |
 | pool-leak | 0/3 | 3/3 | 9/9 | 3.0 s | 9/9 | 0 | 1003 ms | 30 ms |
-| cpu-contention | 3/3 | 3.0 s | 3/3 | 3.1 s | 226 ms | 227 ms |
-| cpu-throttle | 3/3 | 3.0 s | 3/3 | 3.1 s | 2000 ms | 2000 ms |
 
 With no fault running on a warmed-up fleet, no host was flagged in 11 host-hours. That's a small sample: it fits a true rate of up to about 0.27 per host-hour, or about 5 false suspects an hour across 20 hosts. For `dep-slow`, a shared dependency problem, "caught" means a fleet alert, and Graywatch drained nothing in any of the nine trials.
 
@@ -132,11 +130,12 @@ Keep ports 5140 (UDP) and 9100 firewalled from anything outside the VM. `graywat
 - The containers share one kernel and one disk, so this simulates a fleet. A fault on one host can reach its neighbours through shared resources in ways separate machines wouldn't. Writes limited hard enough slowed other hosts, and reverting `io-throttle` on an undrained host slowed the whole fleet for several seconds.
 - Network delay is diagnosed as `app`. Delay alone causes no retransmits, and without round-trip data a slow network looks like a slow application. Graywatch still detects and drains the host, but the label is wrong in all nine trials.
 - HAProxy's logs are the only client view. Graywatch can't see what clients on other paths experience.
+- HAProxy reports a Graywatch drain and a person's maintenance the same way, as `MAINT`. So if you put a server in maintenance after Graywatch drained it, Graywatch still puts it back after the cooldown. The same goes if a drained server is set ready and then back to maintenance while the daemon is stopped. To keep one out, stop the daemon and remove the server from `-state-file`.
 - A host's first requests are slow, up to about 1 s for the first 2 s of traffic, so healthy hosts can go suspect when traffic starts. That really drained a healthy host once, so drains now wait 20 s after traffic starts (`-startup-grace`), and a held drain is logged as `drain_held`. The cost is that a daemon restarted during a real failure can't drain anything for 20 s. Those suspect events can still appear, and the benchmark warms up first, so its false positive numbers don't cover them.
 - Three trials per config is few. These are direct comparisons on one machine, not precise estimates.
 - `mem-pressure` at this strength nearly stalls the host, so it isn't really gray, and even the shallow check catches it in about 16 s.
 - The category is read from one tick, the one that crosses the debounce. In 4 trials of `cpu-contention` and `net-loss`, latency was the only signal flagged on that tick, so the label came out `app`.
-- The run queue signal didn't make detection faster, as 3 s is already the fastest the debounce allows. It is off by default because it traces every context switch, though I couldn't measure a cost from it.
+- The run queue signal didn't make detection faster, as 3 s is already the fastest the debounce allows. It fired on `cpu-throttle` but not `cpu-contention`, whose load spills onto peers sharing the kernel and leaves the host within one bucket of the rest. It is off by default because it traces every context switch. I ran it too few times to tell a small cost from normal variation, and [docs/RESULTS.md](docs/RESULTS.md) has the numbers.
 
 ## What I'd do next
 

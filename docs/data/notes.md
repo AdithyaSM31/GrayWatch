@@ -4,6 +4,8 @@ One Azure `Standard_D4ds_v4` VM (4 vCPU, 16 GiB, local SSD) ran Ubuntu 24.04, 20
 
 Raw results are in `docs/data/trials.csv`, and the eBPF run is in `docs/data/ebpf/trials.csv`.
 
+The main table was measured just before a last round of fixes, and the eBPF table is from the final code. Without `-ebpf` those fixes leave detection as it was, and change drains only for a server already out of rotation, which is now left alone. Three trials with real drains on the final code matched the table: `cpu-throttle`, `mem-pressure` and `pool-leak` were each caught in 3.0 s with the right category, with 0.29%, 0.13% and 0.72% errors against medians of 0.23%, 0.11% and 0.77%.
+
 ## How to read the tables
 
 - HC caught (shallow) counts `shallow:detect` trials only. In a remediate run Graywatch drains first, and a server in maintenance can't read as down, so those trials say nothing about the health check.
@@ -23,8 +25,10 @@ Raw results are in `docs/data/trials.csv`, and the eBPF run is in `docs/data/ebp
 
 ## What the run queue signal adds
 
-Nothing measurable to detection time. Three flagged ticks out of five is the fastest a host can become suspect, and the existing signals already reach that on these faults. It did show up as evidence, in 4 of the 6 suspect events.
+Nothing measurable to detection time. Three flagged ticks out of five is the fastest a host can become suspect, and the existing signals already reach that on these faults. It showed up as evidence in 2 of the 6 suspect events, both on `cpu-throttle`, and never on `cpu-contention`. Contention on one host spills onto its peers through the shared kernel. In a separate one-host check, the fleet's median p99 rose from about 1024 to 2048 us up to 4096 us, while the target sat at 4096 or 8192 us, never more than one bucket above the median.
 
-It is off by default (`-ebpf`). It traces every context switch, about 100,000 a second on this VM, though CPU idle and p99 stayed within normal variation in four comparisons of about a minute each, two with it and two without. Its `MinDelta` is 3000 us. The plan's 2000 us falsely flagged 16 of 20 healthy hosts, because healthy p99 is about 2048 us and the log2 histogram makes the next step up exactly 2048 us higher.
+A host is flagged at 4 times the median and at least 3000 us above it. The p99 comes from a log2 histogram, so it moves by doubling, and a healthy host often sits one bucket above the rest. A limit of 2000 us falsely flagged 16 of 20 healthy hosts at a median of 2048 us, and 3000 us alone would still flag that one-bucket step at a median of 4096 us or more. An earlier run with only the 3000 us limit labelled `cpu-contention` as `cpu` in all three trials, on those one-bucket steps. With the 4 times rule the label comes from the other signals. In this run latency was the only signal flagged on the deciding tick, so all three came out `app`.
 
-The eBPF run is a single config, so it is a smaller sample than the main table.
+It is off by default (`-ebpf`). It traces every context switch, about 100,000 a second on this VM, and I can't say it costs nothing. In one-minute runs at 600 rps, CPU idle was 12.3% and 13.8% without it and 11.9% and 12.7% with it, and p99 was 18 and 29 ms without it and 31 and 31 ms with it. Over the 11-minute no-fault trial, p99 was 24 ms without it and 25 ms with it. That is too few runs to separate a small cost from normal variation.
+
+The eBPF run is a single config, so it is a smaller sample than the main table. Three more trials with real drains and `-ebpf`, on `cpu-throttle`, `mem-pressure` and `pool-leak`, were all caught with the right category, including `memory` for `mem-pressure`.
