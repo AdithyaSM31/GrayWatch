@@ -115,6 +115,24 @@ func TestReadUint(t *testing.T) {
 	}
 }
 
+func TestReadMemAnon(t *testing.T) {
+	got, err := ReadMemAnon(writeTemp(t, "file 96468992\nanon 8388608\nanon_thp 0\nkernel 0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 8388608 {
+		t.Fatalf("got %d, want the anon line and not anon_thp", got)
+	}
+	for _, bad := range []string{"file 96468992\n", "anon abc\n", ""} {
+		if _, err := ReadMemAnon(writeTemp(t, bad)); err == nil {
+			t.Errorf("%q: want error", bad)
+		}
+	}
+	if _, err := ReadMemAnon(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("missing file: want error")
+	}
+}
+
 func writeProcCgroup(t *testing.T, pid, content string) string {
 	t.Helper()
 	root := t.TempDir()

@@ -53,6 +53,7 @@ func testHost(t *testing.T, name string, pid int) fleet.Host {
 		"io.max":         "",
 		"memory.current": "104857600\n",
 		"memory.high":    "max\n",
+		"memory.stat":    "anon 8388608\nfile 96468992\nkernel 0\n",
 	} {
 		writeFile(t, filepath.Join(dir, file), content)
 	}
@@ -203,15 +204,15 @@ func TestFaultsDoNotCreateMissingCgroupFiles(t *testing.T) {
 	}
 }
 
-func TestMemPressureSetsHighAboveCurrent(t *testing.T) {
+func TestMemPressureSetsHighAboveAnon(t *testing.T) {
 	e, rec := testEnv(t)
 	h := testHost(t, "app-07", 1)
 	high := filepath.Join(h.CgroupDir, "memory.high")
 
 	saved := apply(t, e, "mem-pressure", h)
-	// memory.current is 100 MiB, so 164 MiB.
-	if got := readFile(t, high); got != "171966464" {
-		t.Fatalf("memory.high = %q, want 171966464", got)
+	// anon is 8 MiB, so 72 MiB, whatever else memory.current holds.
+	if got := readFile(t, high); got != "75497472" {
+		t.Fatalf("memory.high = %q, want 75497472", got)
 	}
 	if want := []string{"http://172.18.0.7:9090/admin/memhog?mb=300"}; !slices.Equal(rec.posts, want) {
 		t.Fatalf("posts = %q, want %q", rec.posts, want)
@@ -223,6 +224,37 @@ func TestMemPressureSetsHighAboveCurrent(t *testing.T) {
 	}
 	if rec.posts[len(rec.posts)-1] != "http://172.18.0.7:9090/admin/memhog?mb=0" {
 		t.Fatalf("posts = %q, want memhog released last", rec.posts)
+	}
+}
+
+// A host that has run for a while holds its log in page cache, which the kernel
+// drops freely. A limit counted from that cache leaves the hog plenty of room, and
+// the fault has no effect at all, as measured on a VM with 280 MB of cache.
+func TestMemPressureIgnoresPageCache(t *testing.T) {
+	e, _ := testEnv(t)
+	h := testHost(t, "app-07", 1)
+	writeFile(t, filepath.Join(h.CgroupDir, "memory.current"), "314572800\n")
+	writeFile(t, filepath.Join(h.CgroupDir, "memory.stat"), "anon 8388608\nfile 297795584\n")
+	apply(t, e, "mem-pressure", h)
+	if got := readFile(t, filepath.Join(h.CgroupDir, "memory.high")); got != "75497472" {
+		t.Fatalf("memory.high = %q, want 75497472", got)
+	}
+}
+
+func TestMemPressureFailsCleanlyWithoutMemoryStat(t *testing.T) {
+	e, rec := testEnv(t)
+	h := testHost(t, "app-07", 1)
+	if err := os.Remove(filepath.Join(h.CgroupDir, "memory.stat")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mustFault(t, "mem-pressure").Apply(context.Background(), e, h); err == nil {
+		t.Fatal("want error")
+	}
+	if got := readFile(t, filepath.Join(h.CgroupDir, "memory.high")); got != "max\n" {
+		t.Fatalf("memory.high = %q, want it untouched", got)
+	}
+	if len(rec.posts) != 0 {
+		t.Fatalf("posts = %q, want none", rec.posts)
 	}
 }
 

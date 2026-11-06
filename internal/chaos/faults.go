@@ -17,7 +17,10 @@ import (
 const (
 	adminPort = "9090"
 
-	// memHighHeadroom is how far above current usage memory.high goes.
+	// memHighHeadroom is how far above the service's anonymous memory
+	// memory.high goes. Page cache is left out on purpose: a host caches its log at
+	// about 430 MB an hour, and the kernel drops that for free, so counting it
+	// made the fault weaker the longer a host had run, until it did nothing.
 	memHighHeadroom = 64 << 20
 	memHogMB        = 300
 
@@ -147,11 +150,11 @@ func applyMemPressure(ctx context.Context, e Env, h fleet.Host) (map[string]stri
 	if err != nil {
 		return nil, err
 	}
-	current, err := cgroup.ReadUint(filepath.Join(h.CgroupDir, "memory.current"))
+	anon, err := cgroup.ReadMemAnon(filepath.Join(h.CgroupDir, "memory.stat"))
 	if err != nil {
 		return nil, err
 	}
-	if err := writeExisting(high, strconv.FormatUint(current+memHighHeadroom, 10)); err != nil {
+	if err := writeExisting(high, strconv.FormatUint(anon+memHighHeadroom, 10)); err != nil {
 		return nil, err
 	}
 	if err := e.Post(ctx, adminURL(h, fmt.Sprintf("memhog?mb=%d", memHogMB))); err != nil {

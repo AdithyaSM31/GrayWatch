@@ -41,6 +41,25 @@ func ReadCPUStat(path string) (CPUStat, error) {
 	return s, nil
 }
 
+// ReadMemAnon returns the anon line of a memory.stat file: memory the kernel can't
+// simply drop, unlike the page cache that memory.current also counts.
+func ReadMemAnon(path string) (uint64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	for line := range strings.Lines(string(data)) {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(line), "anon "); ok {
+			n, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("%s: %w", path, err)
+			}
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("%s: no anon line", path)
+}
+
 // ReadUint reads a file holding one number, such as memory.current.
 func ReadUint(path string) (uint64, error) {
 	data, err := os.ReadFile(path)

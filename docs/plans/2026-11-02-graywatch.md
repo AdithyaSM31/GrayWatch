@@ -277,7 +277,7 @@ func TestDiscoverInspectError(t *testing.T)  // Inspect fails for one host → e
   | `cpu-throttle` | cpu | save `cpu.max`; write `5000 100000` | write saved value |
   | `cpu-contention` | cpu | POST `/admin/burn?threads=2` | POST `/admin/burn?threads=0` |
   | `io-throttle` | disk | write `<IODevice> rbps=1048576 wbps=1048576 riops=50 wiops=20` to `io.max` (50 was above the 30 writes/s a host really does and had no effect) | write `<IODevice> rbps=max wbps=max riops=max wiops=max` |
-  | `mem-pressure` | memory | save `memory.high`; write `memory.current + 64MiB`; POST `/admin/memhog?mb=300` | POST `/admin/memhog?mb=0`; write saved `memory.high` |
+  | `mem-pressure` | memory | save `memory.high`; write `anon` from `memory.stat` + 64MiB (`memory.current` counts page cache, which absorbed the fault on long-running hosts); POST `/admin/memhog?mb=300` | POST `/admin/memhog?mb=0`; write saved `memory.high` |
   | `dns-break` | app | save `ResolvConf` contents; overwrite with `nameserver 192.0.2.1\n` | write saved contents |
   | `pool-leak` | app | POST `/admin/leak?n=9` | POST `/admin/leak?n=0` |
   | `dep-slow` | fleet | `net-delay` with `delay 300ms` applied to host `dep` | same del |
