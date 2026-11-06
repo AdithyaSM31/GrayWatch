@@ -116,7 +116,7 @@ func (d *Detector) score(samples []collect.Sample, drained map[string]bool) (map
 			}
 			z := zScore(x, median, spread)
 			zs[s.Host][sig] = z
-			if z > d.cfg.Z && x-median > d.cfg.MinDelta[sig] {
+			if z > d.cfg.Z && x-median > d.cfg.MinDelta[sig] && x >= d.cfg.MinRatio[sig]*median {
 				flags[s.Host] = append(flags[s.Host], flag{sig, z})
 			}
 		}
@@ -171,14 +171,23 @@ func (d *Detector) update(host string, flagged []flag, now time.Time) Verdict {
 
 // describe summarises a flagged tick. The category comes from the worst kernel
 // signal, because latency and errors are symptoms while a kernel signal names
-// the cause, however large the symptom's own z-score is.
+// the cause, however large the symptom's own z-score is. Run queue latency names one
+// only if nothing else does: most trouble makes tasks wait, and its low MAD floor gives
+// it a far larger z-score than any other signal.
 func (d *Detector) describe(flagged []flag) (signals []collect.Signal, category string, score float64) {
 	category = appCategory
 	var worstCause float64
 	for _, f := range flagged {
 		signals = append(signals, f.signal)
 		score = max(score, f.z)
-		if c := d.cfg.Category[f.signal]; c != appCategory && f.z > worstCause {
+		c := d.cfg.Category[f.signal]
+		switch {
+		case c == appCategory:
+		case f.signal == collect.SigRunqP99:
+			if worstCause == 0 {
+				category = c
+			}
+		case f.z > worstCause:
 			category, worstCause = c, f.z
 		}
 	}

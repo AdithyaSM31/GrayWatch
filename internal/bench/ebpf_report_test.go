@@ -35,6 +35,19 @@ func TestRenderEBPFComparesTheSameFaults(t *testing.T) {
 }
 
 // Comparing against rows from another config would credit eBPF for the config.
+// A run with only real drains has no detect-only p99, and 0 ms would read as a result.
+func TestRenderEBPFHasNoDetectP99ForARemediateRun(t *testing.T) {
+	base := []TrialResult{trial("cpu-throttle", "shallow", "remediate", true, 3*time.Second)}
+	with := []TrialResult{trial("cpu-throttle", "shallow", "remediate", true, 3*time.Second)}
+	out, err := RenderEBPF(base, with, 20, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "| cpu-throttle | 1/1 | 3.0 s | 1/1 | 3.0 s | n/a | n/a |"; !strings.Contains(out, want) {
+		t.Errorf("no %q in:\n%s", want, out)
+	}
+}
+
 func TestRenderEBPFUsesOnlyMatchingConfigs(t *testing.T) {
 	base := []TrialResult{
 		trial("cpu-throttle", "shallow", "detect", true, 3*time.Second),

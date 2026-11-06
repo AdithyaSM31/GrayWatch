@@ -125,15 +125,17 @@ func Summarize(rs []TrialResult) []Row {
 	return rows
 }
 
+// ms is "n/a" for a config with no trials, where a duration of 0 would read as a result.
+func ms(d time.Duration, trials int) string {
+	if trials == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%d ms", d.Milliseconds())
+}
+
 // RenderMarkdown writes the plan's results table, an error table, and the rate of
 // false positives with no fault running.
 func RenderMarkdown(rows []Row, fpPerHostHour float64) string {
-	ms := func(d time.Duration, n int) string {
-		if n == 0 {
-			return "n/a"
-		}
-		return fmt.Sprintf("%d ms", d.Milliseconds())
-	}
 	pct := func(x float64, n int) string {
 		if n == 0 {
 			return "n/a"
@@ -210,8 +212,8 @@ func RenderEBPF(base, with []TrialResult, hosts int, noFaultWindow time.Duration
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %d ms | %d ms |\n", r.Fault, b0.Graywatch, ttd(b0), r.Graywatch, ttd(r),
-			b0.P99Detect.Milliseconds(), r.P99Detect.Milliseconds())
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s |\n", r.Fault, b0.Graywatch, ttd(b0), r.Graywatch, ttd(r),
+			ms(b0.P99Detect, b0.detectTrials), ms(r.P99Detect, r.detectTrials))
 	}
 	if rate, hostHours, err := FalsePositiveRate(with, hosts, noFaultWindow); err == nil {
 		fmt.Fprintf(&b, "\nFalse positives with no fault running and eBPF on: %.2f per host-hour across %.2f host-hours.\n", rate, hostHours)
